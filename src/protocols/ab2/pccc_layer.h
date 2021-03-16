@@ -39,7 +39,7 @@
 #define PCCC_PACKET_OVERHEAD (64)
 
 
-extern int pccc_layer_setup(plc_p plc, int layer_index, attr attribs);
+extern int pccc_layer_setup(plc_p plc, attr attribs, plc_layer_p *result);
 
 
 

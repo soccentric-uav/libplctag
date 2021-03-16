@@ -33,11 +33,11 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <inttypes.h>
 #include <lib/libplctag.h>
 #include <util/attr.h>
-
 
 typedef int64_t plc_request_id;
 
@@ -58,21 +58,23 @@ struct plc_request_s {
     int (*process_response)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id req_num);
 };
 
+struct plc_layer_s {
+    plc_layer_p next;
+    bool is_connected;
+    int (*initialize)(plc_layer_p layer);
+    int (*connect)(plc_layer_p layer, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end);
+    int (*disconnect)(plc_layer_p layer, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end);
+    int (*reserve_space)(plc_layer_p layer, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
+    int (*build_layer)(plc_layer_p layer, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
+    int (*process_response)(plc_layer_p layer, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
+    int (*destroy_layer)(plc_layer_p layer);
+};
+
 extern int plc_get(const char *plc_type, attr attribs, plc_p *plc, int (*constructor)(plc_p plc, attr attribs));
 extern int plc_initialize(plc_p plc);
 
-extern int plc_set_number_of_layers(plc_p plc, int num_layers);
-extern int plc_set_layer(plc_p plc,
-                          int layer_index,
-                          void *context,
-                          int (*initialize)(void *context),
-                          int (*connect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end),
-                          int (*disconnect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end),
-                          int (*reserve_space)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
-                          int (*build_request)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
-                          int (*process_response)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
-                          int (*destroy_layer)(void *context)
-                        );
+// extern int plc_set_number_of_layers(plc_p plc, int num_layers);
+extern int plc_add_layer(plc_p plc, plc_layer_p layer);
 
 extern void *plc_get_context(plc_p plc);
 extern int plc_set_context(plc_p plc, void *context, void (*context_destructor)(plc_p plc, void *context));
@@ -90,6 +92,8 @@ extern int plc_start_request(plc_p plc,
                              int (*process_response_callback)(void *client, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id req_num));
 
 extern int plc_stop_request(plc_p plc, plc_request_p request);
+
+extern const char *plc_get_key(plc_p plc);
 
 extern int plc_module_init(void);
 extern void plc_module_teardown(void);

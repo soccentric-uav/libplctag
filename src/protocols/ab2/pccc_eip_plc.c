@@ -108,6 +108,7 @@ int pccc_constructor(plc_p plc, attr attribs)
 {
     int rc = PLCTAG_STATUS_OK;
     struct local_plc_context_s *context = NULL;
+    plc_layer_p layer = NULL;
     int max_packet = PCCC_CIP_MAX_PAYLOAD + PCCC_PACKET_OVERHEAD;
 
     pdebug(DEBUG_INFO, "Starting.");
@@ -143,31 +144,42 @@ int pccc_constructor(plc_p plc, attr attribs)
         return rc;
     }
 
-    /* start building up the layers. */
-    rc = plc_set_number_of_layers(plc, 3); /* 3 layers */
-    if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_WARN, "Unable to initialize the PLC with the layer count and context, error %s!", plc_tag_decode_error(rc));
-        return rc;
-    }
-
     /* first layer, EIP */
-    rc = eip_layer_setup(plc, 0, attribs);
+    rc = eip_layer_setup(plc, attribs, &layer);
     if(rc != PLCTAG_STATUS_OK) {
         pdebug(DEBUG_WARN, "Unable to initialize the EIP layer, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 
+    rc = plc_add_layer(plc, layer);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to add the EIP layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
+
     /* second layer, CIP */
-    rc = cip_layer_setup(plc, 1, attribs);
+    rc = cip_layer_setup(plc, attribs, &layer);
     if(rc != PLCTAG_STATUS_OK) {
         pdebug(DEBUG_WARN, "Unable to initialize the CIP layer, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 
-    /* second layer, PCCC */
-    rc = pccc_layer_setup(plc, 2, attribs);
+    rc = plc_add_layer(plc, layer);
     if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_WARN, "Unable to initialize the CIP layer, error %s!", plc_tag_decode_error(rc));
+        pdebug(DEBUG_WARN, "Unable to add the EIP layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
+
+    /* third layer, PCCC */
+    rc = pccc_layer_setup(plc, attribs, &layer);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to initialize the PCCC layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
+
+    rc = plc_add_layer(plc, layer);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to add the EIP layer, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 

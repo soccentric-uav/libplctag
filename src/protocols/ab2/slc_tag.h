@@ -36,5 +36,5 @@
 #include <lib/tag.h>
 #include <util/attr.h>
 
-extern struct tag_vtable_t slc_tag_vtable;
-extern tag_byte_order_t slc_tag_byte_order;
+extern struct tag_vtable_t ab2_slc_tag_vtable;
+extern tag_byte_order_t ab2_slc_tag_byte_order;

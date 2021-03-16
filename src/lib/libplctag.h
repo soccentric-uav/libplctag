@@ -59,6 +59,7 @@ extern "C" {
 
 
 /* library internal status. */
+#define PLCTAG_STATUS_RETRY         (2)
 #define PLCTAG_STATUS_PENDING       (1)
 #define PLCTAG_STATUS_OK            (0)
 

@@ -52,25 +52,26 @@
 #define PCCC_RESP_HEADER_SIZE (11)
 
 struct pccc_layer_state_s {
-    /* session data */
+    struct plc_layer_s base_layer;
+
     plc_p plc;
 
     int pccc_header_start_offset;
 };
 
 
-static int pccc_layer_initialize(void *context);
-// static int pccc_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
-// static int pccc_layer_disconnect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
-static int pccc_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int pccc_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int pccc_layer_destroy_layer(void *context);
+static int pccc_layer_initialize(plc_layer_p layer_arg);
+static int pccc_layer_connect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
+static int pccc_layer_disconnect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
+static int pccc_layer_reserve_space(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int pccc_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int pccc_layer_process_response(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int pccc_layer_destroy_layer(plc_layer_p layer_arg);
 
 
 
 
-int pccc_layer_setup(plc_p plc, int layer_index, attr attribs)
+int pccc_layer_setup(plc_p plc, attr attribs, plc_layer_p *result)
 {
     int rc = PLCTAG_STATUS_OK;
     struct pccc_layer_state_s *state = NULL;
@@ -87,21 +88,15 @@ int pccc_layer_setup(plc_p plc, int layer_index, attr attribs)
 
     state->plc = plc;
 
-    rc = plc_set_layer(plc,
-                       layer_index,
-                       state,
-                       pccc_layer_initialize,
-                       /*pccc_layer_connect*/ NULL,
-                       /*pccc_layer_disconnect*/ NULL,
-                       pccc_layer_reserve_space,
-                       pccc_layer_fix_up_request,
-                       pccc_layer_process_response,
-                       pccc_layer_destroy_layer);
-    if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_WARN, "Error setting layer!");
-        mem_free(state);
-        return rc;
-    }
+    state->base_layer.initialize = pccc_layer_initialize;
+    state->base_layer.connect = pccc_layer_connect;
+    state->base_layer.disconnect = pccc_layer_disconnect;
+    state->base_layer.reserve_space = pccc_layer_reserve_space;
+    state->base_layer.build_layer = pccc_layer_build_layer;
+    state->base_layer.process_response = pccc_layer_process_response;
+    state->base_layer.destroy_layer = pccc_layer_destroy_layer;
+
+    *result = (plc_layer_p)state;
 
     pdebug(DEBUG_INFO, "Done.");
 
@@ -112,10 +107,10 @@ int pccc_layer_setup(plc_p plc, int layer_index, attr attribs)
 /*
  * reset our state back to something sane.
  */
-int pccc_layer_initialize(void *context)
+int pccc_layer_initialize(plc_layer_p layer_arg)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
 
     (void)state;
 
@@ -128,23 +123,53 @@ int pccc_layer_initialize(void *context)
 
 
 
+int pccc_layer_connect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end)
+{
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
+
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
+
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
+
+    return state->base_layer.next->connect(state->base_layer.next, buffer, buffer_capacity, payload_start, payload_end);
+}
+
+
+
+
+
+
+int pccc_layer_disconnect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end)
+{
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
+
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
+
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
+
+    return state->base_layer.next->disconnect(state->base_layer.next, buffer, buffer_capacity, payload_start, payload_end);
+}
+
+
 
 /* called bottom up */
 
-int pccc_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int pccc_layer_reserve_space(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
-    int max_payload_size = *payload_end - *payload_start;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
+    int max_payload_size = 0;
 
-    (void)buffer;
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
 
-    pdebug(DEBUG_INFO, "Preparing layer for building a request.");
-
-    /* only one packet possible. */
-    *req_id = 1;
+    rc = state->base_layer.next->reserve_space(state->base_layer.next, buffer, buffer_capacity, payload_start, payload_end, req_id);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to reserve space in the next layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
 
     /* allocate space for the PCCC header. */
+    max_payload_size = *payload_end - *payload_start;
     if(max_payload_size < PCCC_REQ_HEADER_SIZE) {
         pdebug(DEBUG_WARN, "Buffer size, (%d) is too small for EIP header (size %d)!", buffer_capacity, PCCC_REQ_HEADER_SIZE);
         return PLCTAG_ERR_TOO_SMALL;
@@ -156,30 +181,22 @@ int pccc_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity
     /* bump the start for the next payload. */
     *payload_start += PCCC_REQ_HEADER_SIZE;
 
-    /* clamp the payload_end to what is possible for PCCC */
-    // if(*payload_end > (DF1_PLC5_WRITE_MAX_PAYLOAD + PCCC_PACKET_OVERHEAD)) {
-    //     pdebug(DEBUG_INFO, "Clamping payload end to max PCCC packet size.");
-    //     *payload_end = DF1_PLC5_WRITE_MAX_PAYLOAD + PCCC_PACKET_OVERHEAD;
-    // }
+    /* FIXME - need to set the payload end here. */
 
-    pdebug(DEBUG_INFO, "Done with payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
+    pdebug(DEBUG_INFO, "Done PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     return rc;
 }
 
 
 
-/* call top down. */
-
-int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int pccc_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
     int offset = state->pccc_header_start_offset;
 
-    (void)req_id;
-
-    pdebug(DEBUG_INFO, "Starting with payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
+    pdebug(DEBUG_INFO, "Starting for PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     do {
         /* check the start against our header size. */
@@ -217,15 +234,17 @@ int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacit
         pdebug_dump_bytes(DEBUG_DETAIL, buffer + *payload_start, *payload_end - *payload_start);
 
         pdebug(DEBUG_INFO, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
-    } while(0);
 
+        /* call down into the next layer. */
+        rc = state->base_layer.next->build_layer(state->base_layer.next, buffer, buffer_capacity, payload_start, payload_end, req_id);
+    } while(0);
 
     if(rc != PLCTAG_STATUS_OK) {
         pdebug(DEBUG_WARN, "Unable to build PCCC header packet, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 
-    pdebug(DEBUG_INFO, "Done.");
+    pdebug(DEBUG_INFO, "Done for PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     return rc;
 }
@@ -233,24 +252,32 @@ int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacit
 
 /* bottom up. */
 
-int pccc_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int pccc_layer_process_response(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
     int offset = *payload_start;
 
-    (void)state;
+    pdebug(DEBUG_INFO, "Starting for PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
-    pdebug(DEBUG_INFO, "Starting with payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
-
-    /* there is only one PCCC response in a packet. */
-    *req_id = 1;
 
     do {
         uint8_t cip_service_code = 0;
         uint8_t dummy_u8 = 0;
         uint8_t status = 0;
         uint8_t extended_status_words = 0;
+
+        /* call down to next layer. */
+        rc = state->base_layer.next->process_response(state->base_layer.next, buffer, buffer_capacity, payload_start, payload_end, req_id);
+        if(rc != PLCTAG_STATUS_OK) {
+            if(rc == PLCTAG_ERR_PARTIAL) {
+                pdebug(DEBUG_INFO, "Full packet not yet received, continue to wait.");
+                break;
+            } else {
+                pdebug(DEBUG_WARN, "Error %s in lower layers processing response!", plc_tag_decode_error(rc));
+                break;
+            }
+        }
 
         TRY_GET_BYTE(buffer, buffer_capacity, offset, cip_service_code);
         TRY_GET_BYTE(buffer, buffer_capacity, offset, dummy_u8);
@@ -296,22 +323,27 @@ int pccc_layer_process_response(void *context, uint8_t *buffer, int buffer_capac
         return rc;
     }
 
-    pdebug(DEBUG_INFO, "Done.");
+    pdebug(DEBUG_INFO, "Done for PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     return rc;
 }
 
 
 
-
-int pccc_layer_destroy_layer(void *context)
+int pccc_layer_destroy_layer(plc_layer_p layer_arg)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)layer_arg;
 
     pdebug(DEBUG_INFO, "Cleaning up PCCC layer.");
 
     if(state) {
+        if(state->base_layer.next) {
+            pdebug(DEBUG_INFO, "Destroying next layer.");
+            state->base_layer.next->destroy_layer(state->base_layer.next);
+            state->base_layer.next = NULL;
+        }
+
         mem_free(state);
     }
 

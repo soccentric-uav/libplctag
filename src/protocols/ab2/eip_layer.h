@@ -36,7 +36,7 @@
 #include <util/attr.h>
 #include <util/plc.h>
 
-extern int eip_layer_setup(plc_p plc, int layer_index, attr attribs);
+extern int eip_layer_setup(plc_p plc, attr attribs, plc_layer_p *result);
 
 
 

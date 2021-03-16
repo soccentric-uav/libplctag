@@ -61,7 +61,7 @@ static int slc_tag_write(plc_tag_p tag);
 
 
 /* vtable for SLC tags */
-struct tag_vtable_t slc_tag_vtable = {
+struct tag_vtable_t ab2_slc_tag_vtable = {
     slc_tag_abort,
     slc_tag_read,
     slc_tag_status,
@@ -73,13 +73,13 @@ struct tag_vtable_t slc_tag_vtable = {
     pccc_set_int_attrib
 };
 
-tag_byte_order_t slc_tag_byte_order = {
+tag_byte_order_t ab2_slc_tag_byte_order = {
     .is_allocated = 0,
 
     .int16_order = {0,1},
     .int32_order = {0,1,2,3},
     .int64_order = {0,1,2,3,4,5,6,7},
-    .float32_order = {2,3,0,1}, /* yes, it is that weird. */
+    .float32_order = {0,1,2,3},
     .float64_order = {0,1,2,3,4,5,6,7},
 
     .str_is_defined = 1,

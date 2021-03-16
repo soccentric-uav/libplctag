@@ -86,8 +86,9 @@ int cip_constructor(plc_p plc, attr attribs)
     int rc = PLCTAG_STATUS_OK;
     struct cip_plc_context_s *context = NULL;
     int max_packet = CIP_STD_PAYLOAD + CIP_OVERHEAD;
+    plc_layer_p layer = NULL;
 
-    pdebug(DEBUG_INFO, "Starting.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(plc));
 
     /* set up the PLC buffer */
     rc = plc_set_buffer_size(plc, max_packet);
@@ -118,28 +119,33 @@ int cip_constructor(plc_p plc, attr attribs)
         return rc;
     }
 
-    /* start building up the layers. */
-    rc = plc_set_number_of_layers(plc, 2); /* 2 layers */
-    if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_WARN, "Unable to initialize the PLC with the layer count and context, error %s!", plc_tag_decode_error(rc));
-        return rc;
-    }
-
     /* first layer, EIP */
-    rc = eip_layer_setup(plc, 0, attribs);
+    rc = eip_layer_setup(plc, attribs, &layer);
     if(rc != PLCTAG_STATUS_OK) {
         pdebug(DEBUG_WARN, "Unable to initialize the EIP layer, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 
+    rc = plc_add_layer(plc, layer);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to add the EIP layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
+
     /* second layer, CIP */
-    rc = cip_layer_setup(plc, 1, attribs);
+    rc = cip_layer_setup(plc, attribs, &layer);
     if(rc != PLCTAG_STATUS_OK) {
         pdebug(DEBUG_WARN, "Unable to initialize the CIP layer, error %s!", plc_tag_decode_error(rc));
         return rc;
     }
 
-    pdebug(DEBUG_INFO, "Done.");
+    rc = plc_add_layer(plc, layer);
+    if(rc != PLCTAG_STATUS_OK) {
+        pdebug(DEBUG_WARN, "Unable to add the EIP layer, error %s!", plc_tag_decode_error(rc));
+        return rc;
+    }
+
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(plc));
 
     return PLCTAG_STATUS_OK;
 }

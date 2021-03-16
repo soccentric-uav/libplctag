@@ -59,11 +59,11 @@
 
 
 struct eip_layer_state_s {
-    /* session data */
+    struct plc_layer_s base_layer;
+
     plc_p plc;
 
-    bool is_connected;
-
+    /* session data */
     uint32_t session_handle;
     uint64_t session_context;
 
@@ -72,23 +72,23 @@ struct eip_layer_state_s {
 };
 
 
-static int eip_layer_initialize(void *context);
-static int eip_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
-// static int eip_layer_disconnect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
-static int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int eip_layer_destroy_layer(void *context);
+static int eip_layer_initialize(plc_layer_p layer_arg);
+static int eip_layer_connect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
+static int eip_layer_disconnect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
+static int eip_layer_reserve_space(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int eip_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int eip_layer_process_response(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int eip_layer_destroy_layer(plc_layer_p layer_arg);
 
 
 
 
-int eip_layer_setup(plc_p plc, int layer_index, attr attribs)
+int eip_layer_setup(plc_p plc, attr attribs, plc_layer_p *result)
 {
     int rc = PLCTAG_STATUS_OK;
     struct eip_layer_state_s *state = NULL;
 
-    pdebug(DEBUG_INFO, "Starting.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(plc));
 
     /* set the default port for EIP */
     attr_set_int(attribs, "default_port", EIP_DEFAULT_PORT);
@@ -99,26 +99,20 @@ int eip_layer_setup(plc_p plc, int layer_index, attr attribs)
         return PLCTAG_ERR_NO_MEM;
     }
 
-    state->is_connected = false;
+    state->base_layer.is_connected = false;
     state->plc = plc;
 
-    rc = plc_set_layer(plc,
-                       layer_index,
-                       state,
-                       eip_layer_initialize,
-                       eip_layer_connect,
-                       /*eip_layer_disconnect*/ NULL,
-                       eip_layer_reserve_space,
-                       eip_layer_fix_up_request,
-                       eip_layer_process_response,
-                       eip_layer_destroy_layer);
-    if(rc != PLCTAG_STATUS_OK) {
-        pdebug(DEBUG_WARN, "Error setting layer!");
-        mem_free(state);
-        return rc;
-    }
+    state->base_layer.initialize = eip_layer_initialize;
+    state->base_layer.connect = eip_layer_connect;
+    state->base_layer.disconnect = eip_layer_disconnect;
+    state->base_layer.reserve_space = eip_layer_reserve_space;
+    state->base_layer.build_layer = eip_layer_build_layer;
+    state->base_layer.process_response = eip_layer_process_response;
+    state->base_layer.destroy_layer = eip_layer_destroy_layer;
 
-    pdebug(DEBUG_INFO, "Done.");
+    *result = (plc_layer_p)state;
+
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(plc));
 
     return rc;
 }
@@ -127,35 +121,35 @@ int eip_layer_setup(plc_p plc, int layer_index, attr attribs)
 /*
  * reset our state back to something sane.
  */
-int eip_layer_initialize(void *context)
+int eip_layer_initialize(plc_layer_p layer_arg)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
 
-    pdebug(DEBUG_INFO, "Initializing EIP layer.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
 
-    state->is_connected = false;
+    state->base_layer.is_connected = false;
 
     state->session_handle = 0;
     state->session_context = (uint64_t)rand();
 
-    pdebug(DEBUG_INFO, "Done.");
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
 
     return rc;
 }
 
 
 
-int eip_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end)
+int eip_layer_connect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
 
-    pdebug(DEBUG_INFO, "Building EIP connect packet.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
 
-    if(state->is_connected == true) {
-        pdebug(DEBUG_WARN, "Connect called while EIP layer is already connected!");
-        return PLCTAG_ERR_BUSY;
+    /* if we are already connected, we are done. */
+    if(state->base_layer.is_connected == true) {
+        return PLCTAG_STATUS_OK;
     }
 
     /* check space */
@@ -198,31 +192,48 @@ int eip_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *
         pdebug_dump_bytes(DEBUG_INFO, buffer + *payload_start, *payload_end - *payload_start);
 
         pdebug(DEBUG_DETAIL, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
+
+        /* all good, but we need to send it. */
+        rc = PLCTAG_STATUS_PENDING;
     } while(0);
 
-    if(rc != PLCTAG_STATUS_OK) {
+    if(rc != PLCTAG_STATUS_OK && rc != PLCTAG_STATUS_PENDING) {
         pdebug(DEBUG_WARN, "Error, %s, building session registration request!", plc_tag_decode_error(rc));
         return rc;
     }
 
-    pdebug(DEBUG_INFO, "Done.");
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
 
     return rc;
 }
 
 
+int eip_layer_disconnect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end)
+{
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
 
-/* called from the bottom up. */
+    (void)buffer;
+    (void)buffer_capacity;
+    (void)payload_start;
+    (void)payload_end;
 
-int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
+
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
+
+    return PLCTAG_STATUS_OK;
+}
+
+
+int eip_layer_reserve_space(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
 
     (void)buffer;
     (void)req_id;
 
-    pdebug(DEBUG_INFO, "Preparing layer for building a request.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s with payload_start=% and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     /* allocate space for the EIP header. */
     if(buffer_capacity < EIP_HEADER_SIZE) {
@@ -242,7 +253,7 @@ int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity,
 
     state->payload_start = *payload_start;
 
-    pdebug(DEBUG_INFO, "Done with payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
+    pdebug(DEBUG_INFO, "Done for PLC %s with payload_start=%d and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     return rc;
 }
@@ -251,10 +262,10 @@ int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity,
 
 /* called top down, the payload end is the end of the whole packet.  */
 
-int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int eip_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
     int offset = 0;
     int payload_size = *payload_end - *payload_start;
     uint16_t command = SEND_UNCONNECTED_DATA_CMD;
@@ -262,12 +273,10 @@ int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity
 
     (void)req_id;
 
-    pdebug(DEBUG_INFO, "Building a request.");
-
-    /* set this to something.   Not used at this layer. */
+    pdebug(DEBUG_INFO, "Starting for PLC %s with payload_start=% and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
 
     /* check to see if we are connected or not. */
-    if(!state->is_connected) {
+    if(!state->base_layer.is_connected) {
         /* nope.*/
         pdebug(DEBUG_WARN, "EIP session is not connected!");
         return PLCTAG_ERR_BAD_CONNECTION;
@@ -345,7 +354,7 @@ int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity
         return rc;
     }
 
-    pdebug(DEBUG_INFO, "Done.");
+    pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
 
     return rc;
 }
@@ -353,17 +362,17 @@ int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity
 
 /* this is bottom up. */
 
-int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int eip_layer_process_response(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
     uint16_t command = 0;
     int payload_size = *payload_end - *payload_start;
     uint32_t status = 0;
     uint32_t session_handle = 0;
     int offset = 0;
 
-    pdebug(DEBUG_INFO, "Processing EIP response.");
+    pdebug(DEBUG_INFO, "Starting for PLC %s.", plc_get_key(state->plc));
 
     /* there is only one EIP response in a packet. */
     *req_id = 1;
@@ -389,7 +398,7 @@ int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capaci
 
         /* do we have the whole packet? */
         if(*payload_end < (int)(unsigned int)(payload_size + EIP_HEADER_SIZE)) {
-            pdebug(DEBUG_DETAIL, "Need more data than the header, we need %d bytes and have %d bytes.", (int)(unsigned int)(payload_size + EIP_HEADER_SIZE), *payload_end);
+            pdebug(DEBUG_DETAIL, "Need more data than the header, we need %d total bytes and have %d bytes.", (int)(unsigned int)(payload_size + EIP_HEADER_SIZE), *payload_end);
             rc = PLCTAG_ERR_PARTIAL;
             break;
         }
@@ -417,7 +426,7 @@ int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capaci
             /* copy the information into the state. */
             state->session_handle = session_handle;
 
-            state->is_connected = true;
+            state->base_layer.is_connected = true;
 
             /* signal that we have consumed the whole payload. */
             *payload_end = 0;
@@ -441,12 +450,10 @@ int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capaci
 }
 
 
-
-
-int eip_layer_destroy_layer(void *context)
+int eip_layer_destroy_layer(plc_layer_p layer_arg)
 {
     int rc = PLCTAG_STATUS_OK;
-    struct eip_layer_state_s *state = (struct eip_layer_state_s *)context;
+    struct eip_layer_state_s *state = (struct eip_layer_state_s *)layer_arg;
 
     pdebug(DEBUG_INFO, "Cleaning up EIP layer.");
 
