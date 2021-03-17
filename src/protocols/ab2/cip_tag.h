@@ -37,5 +37,5 @@
 #include <util/attr.h>
 
 
-extern struct tag_vtable_t cip_tag_vtable;
-extern tag_byte_order_t cip_tag_byte_order;
+extern struct tag_vtable_t ab2_cip_tag_vtable;
+extern tag_byte_order_t ab2_cip_tag_byte_order;

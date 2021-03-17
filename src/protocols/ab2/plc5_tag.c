@@ -62,7 +62,7 @@ static int plc5_tag_write(plc_tag_p tag);
 
 
 /* vtable for PLC-5 tags */
-struct tag_vtable_t plc5_tag_vtable = {
+struct tag_vtable_t ab2_plc5_tag_vtable = {
     plc5_tag_abort,
     plc5_tag_read,
     plc5_tag_status,
@@ -75,7 +75,7 @@ struct tag_vtable_t plc5_tag_vtable = {
 };
 
 
-tag_byte_order_t plc5_tag_byte_order = {
+tag_byte_order_t ab2_plc5_tag_byte_order = {
     .is_allocated = 0,
 
     .int16_order = {0,1},

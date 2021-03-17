@@ -134,15 +134,15 @@ plc_tag_p pccc_tag_create(ab2_plc_type_t plc_type, attr attribs)
     /* set the vtable for base functions. */
     switch(plc_type) {
         case AB2_PLC_PLC5:
-            tag->base_tag.vtable = &plc5_tag_vtable;
-            tag->base_tag.byte_order = &plc5_tag_byte_order;
+            tag->base_tag.vtable = &ab2_plc5_tag_vtable;
+            tag->base_tag.byte_order = &ab2_plc5_tag_byte_order;
             break;
 
         case AB2_PLC_SLC:
             /* fall through */
         case AB2_PLC_MLGX:
-            tag->base_tag.vtable = &slc_tag_vtable;
-            tag->base_tag.byte_order = &slc_tag_byte_order;
+            tag->base_tag.vtable = &ab2_slc_tag_vtable;
+            tag->base_tag.byte_order = &ab2_slc_tag_byte_order;
             break;
 
         default:
