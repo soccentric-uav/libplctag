@@ -201,22 +201,22 @@ plc_tag_p cip_tag_create(ab2_plc_type_t plc_type, attr attribs)
             /* Set the max payload size up high to enable Forward Open Extended use and negotiation. */
             attr_set_int(attribs, "cip_payload", attr_get_int(attribs, "cip_payload", CIP_MAX_PAYLOAD));
 
-            tag->base_tag.vtable = &cip_tag_vtable;
-            tag->base_tag.byte_order = &cip_tag_byte_order;
+            tag->base_tag.vtable = &ab2_cip_tag_vtable;
+            tag->base_tag.byte_order = &ab2_cip_tag_byte_order;
             tag->plc = cip_plc_get(attribs);
             break;
 
         case AB2_PLC_MLGX800:
             attr_set_int(attribs, "cip_payload", attr_get_int(attribs, "cip_payload", CIP_STD_PAYLOAD));
-            tag->base_tag.vtable = &cip_tag_vtable;
-            tag->base_tag.byte_order = &cip_tag_byte_order;
+            tag->base_tag.vtable = &ab2_cip_tag_vtable;
+            tag->base_tag.byte_order = &ab2_cip_tag_byte_order;
             tag->plc = cip_plc_get(attribs);
             break;
 
         case AB2_PLC_OMRON_NJNX:
             attr_set_int(attribs, "cip_payload", attr_get_int(attribs, "cip_payload", CIP_STD_PAYLOAD));
-            tag->base_tag.vtable = &cip_tag_vtable;
-            tag->base_tag.byte_order = &cip_tag_byte_order;
+            tag->base_tag.vtable = &ab2_cip_tag_vtable;
+            tag->base_tag.byte_order = &ab2_cip_tag_byte_order;
             tag->plc = cip_plc_get(attribs);
             break;
 

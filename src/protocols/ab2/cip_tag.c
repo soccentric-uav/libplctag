@@ -59,7 +59,7 @@ static int cip_tag_write(plc_tag_p tag);
 
 
 /* vtable for PLC-5 tags */
-struct tag_vtable_t cip_tag_vtable = {
+struct tag_vtable_t ab2_cip_tag_vtable = {
     cip_tag_abort,
     cip_tag_read,
     cip_tag_status,
@@ -72,7 +72,7 @@ struct tag_vtable_t cip_tag_vtable = {
 };
 
 
-tag_byte_order_t cip_tag_byte_order = {
+tag_byte_order_t ab2_cip_tag_byte_order = {
     .is_allocated = 0,
 
     .int16_order = {0,1},

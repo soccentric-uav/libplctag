@@ -560,6 +560,11 @@ extern int socket_close(sock_p sock)
         return PLCTAG_ERR_NULL_PTR;
     }
 
+    if(sock->fd == INVALID_SOCKET) {
+        pdebug(DEBUG_DETAIL, "Socket already closed.");
+        return rc;
+    }
+
     /*
      * remove it from the list and clear the FD sets.
      * These are changed by the event thread too, so
@@ -582,6 +587,9 @@ extern int socket_close(sock_p sock)
             global_socket_iterator = sock->next;
         }
 
+        /* clear any link left in the socket object. */
+        sock->next = NULL;
+
         /* clear the FD sets */
         FD_CLR(sock->fd, &global_read_fds);
         FD_CLR(sock->fd, &global_write_fds);
@@ -594,37 +602,31 @@ extern int socket_close(sock_p sock)
             atomic_int_add(&recalculate_fd_set_pressure, (int)FD_SET_RECALC_PRESSURE_INCREMENT);
         }
 
-        /* close the socket fd */
-        if(sock->fd != INVALID_SOCKET) {
-            /* try to do this gently */
-            if(shutdown(sock->fd, SHUT_RDWR)) {
-                pdebug(DEBUG_WARN, "Error while shutting down socket: %d!", errno);
-                rc = PLCTAG_ERR_CLOSE;
-            }
-
-            /* close either way */
-            if(SOCK_CLOSE(sock->fd)) {
-                pdebug(DEBUG_WARN, "Error while closing socket: %d!", errno);
-                rc = PLCTAG_ERR_CLOSE;
-            }
-
-            sock->fd = INVALID_SOCKET;
+        /* try to do this gently */
+        if(shutdown(sock->fd, SHUT_RDWR)) {
+            pdebug(DEBUG_WARN, "Error while shutting down socket: %d!", errno);
+            rc = PLCTAG_ERR_CLOSE;
         }
+
+        /* close either way */
+        if(SOCK_CLOSE(sock->fd)) {
+            pdebug(DEBUG_WARN, "Error while closing socket: %d!", errno);
+            rc = PLCTAG_ERR_CLOSE;
+        }
+
+        sock->fd = INVALID_SOCKET;
 
         /* make sure the event thread will not try to handle this. */
         connection_thread = sock->connection_thread;
         sock->connection_thread = NULL;
-
-        /* clear any link left in the socket object. */
-        sock->next = NULL;
     }
 
     /*
      * now that the socket is removed from the list, the event thread
      * will not trigger it.
      *
-     * This is racy if another call to socket_callback_when_connection_ready() is made by
-     * another thread when this is running.  Don't do that.
+     * TODO - is this racy if another thread is starting the connection and
+     * has a callback set up?
      */
 
     /*
