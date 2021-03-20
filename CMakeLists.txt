@@ -33,7 +33,7 @@
 # the project is version 2.3
 set (libplctag_VERSION_MAJOR 2)
 set (libplctag_VERSION_MINOR 3)
-set (libplctag_VERSION_PATCH 5)
+set (libplctag_VERSION_PATCH 7)
 set (VERSION "${libplctag_VERSION_MAJOR}.${libplctag_VERSION_MINOR}.${libplctag_VERSION_PATCH}")
 
 set (LIB_NAME_SUFFIX "${libplctag_VERSION_MAJOR}.${libplctag_VERSION_MINOR}.${libplctag_VERSION_PATCH}")
@@ -178,8 +178,12 @@ SET(C99_FLAGS "")
 # C compiler specific settings
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
     # using Clang
-    set(BASE_RELEASE_FLAGS "${CMAKE_C_FLAGS} -Os -Wall -pedantic -Wextra -Wconversion -Wno-error=stringop-overflow= -fms-extensions -fno-strict-aliasing")
-    set(BASE_DEBUG_FLAGS "${CMAKE_C_FLAGS} -g -Wall -pedantic -Wextra -Wconversion -fms-extensions -fno-strict-aliasing")
+
+    SET(STR_OP_OVERFLOW_ON "")
+    SET(STR_OP_OVERFLOW_OFF "")
+
+    set(BASE_RELEASE_FLAGS "${CMAKE_C_FLAGS} -Os -Wall -pedantic -Wextra -Wconversion -fms-extensions -fno-strict-aliasing ${STR_OP_OVERFLOW_OFF}")
+    set(BASE_DEBUG_FLAGS "${CMAKE_C_FLAGS} -g -Wall -pedantic -Wextra -Wconversion -fms-extensions -fno-strict-aliasing ${STR_OP_OVERFLOW_ON}")
     set(BASE_RELEASE_LINK_FLAGS "")
     set(BASE_DEBUG_LINK_FLAGS "")
 
@@ -226,8 +230,21 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU")
 		MESSAGE(STATUS "Compiler does not support C99/C11 compatibility check." )
 	endif()
 
-    set(BASE_RELEASE_FLAGS "${CMAKE_C_FLAGS} -Os -Wall -pedantic -Wextra ${C11_CHECK} -Wconversion -fms-extensions -fno-strict-aliasing -Wno-error=stringop-overflow= -D__USE_POSIX=1 -D_POSIX_C_SOURCE=200809L")
-    set(BASE_DEBUG_FLAGS "${CMAKE_C_FLAGS}  -g -Wall -pedantic -Wextra ${C11_CHECK} -Wconversion -fms-extensions -fno-strict-aliasing -D__USE_POSIX=1 -D_POSIX_C_SOURCE=200809L")
+    if(${COMPILER_VERSION} VERSION_GREATER 8.0 AND ${COMPILER_VERSION} VERSION_LESS 11.0)
+        # the compiler supports the -Wstringop-overflow flag.
+        # There is clearly a bug in the compiler that throws this warning inconsistently.
+        # Suppress it for RELEASE builds.
+        MESSAGE(STATUS "Compiler supports string op overflow checking.  Suppress for Release builds.")
+        SET(STR_OP_OVERFLOW_ON "-Wstringop-overflow")
+        SET(STR_OP_OVERFLOW_OFF "-Wno-stringop-overflow")
+    else()
+        MESSAGE(STATUS "Compiler does not support string op overflow checking.")
+        SET(STR_OP_OVERFLOW_ON "")
+        SET(STR_OP_OVERFLOW_OFF "")
+    endif()
+
+    set(BASE_RELEASE_FLAGS "${CMAKE_C_FLAGS} -Wall -pedantic -Wextra -Wconversion -fms-extensions -fno-strict-aliasing ${STR_OP_OVERFLOW_OFF} -D__USE_POSIX=1 -D_POSIX_C_SOURCE=200809L")
+    set(BASE_DEBUG_FLAGS "${CMAKE_C_FLAGS} -g -Wall -pedantic -Wextra -Wconversion -fms-extensions -fno-strict-aliasing ${STR_OP_OVERFLOW_ON} -D__USE_POSIX=1 -D_POSIX_C_SOURCE=200809L")
 	set(C99_FLAGS "-std=c99" )
     set(BASE_RELEASE_LINK_FLAGS "")
     set(BASE_DEBUG_LINK_FLAGS "")
@@ -286,6 +303,9 @@ else()
 endif()
 
 set(BASE_CXX_FLAGS "${BASE_FLAGS}")
+
+MESSAGE("BASE_C_FLAGS=${BASE_C_FLAGS}")
+MESSAGE("BASE_CXX_FLAGS=${BASE_CXX_FLAGS}")
 
 # generate version file from CMake info.
 CONFIGURE_FILE("${lib_SRC_PATH}/version.h.in" "${lib_SRC_PATH}/version.h" @ONLY)
@@ -400,7 +420,7 @@ set ( libplctag_SRCS "${lib_SRC_PATH}/init.c"
 
 # set the compiler flags
 FOREACH( lib_src ${libplctag_SRCS} )
-    set_source_files_properties(${lib_src} PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS}")
+    set_source_files_properties(${lib_src} PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS} ${C11_CHECK}")
 ENDFOREACH()
 
 # shared library
@@ -508,11 +528,11 @@ else()
     endif()
 
     # set the compile flags for the utilities file.
-    set_source_files_properties("${example_SRC_PATH}/${example_PROG_UTIL}" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS}" )
+    set_source_files_properties("${example_SRC_PATH}/${example_PROG_UTIL}" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS} ${C11_CHECK}" )
 
     # set the compile and link properties for all examples.
     foreach ( example ${example_PROGRAMS} )
-        set_source_files_properties("${example_SRC_PATH}/${example}.c" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS}" )
+        set_source_files_properties("${example_SRC_PATH}/${example}.c" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS} ${C11_CHECK}" )
         add_executable( ${example} "${example_SRC_PATH}/${example}.c" "${example_SRC_PATH}/${example_PROG_UTIL}" "${example_SRC_PATH}/utils.h" )
         target_link_libraries(${example} ${example_LIBRARIES} )
 
@@ -522,7 +542,6 @@ else()
     endforeach(example)
 
     # simple.cpp is different because it is C++
-    message("BASE_CXX_FLAGS=${BASE_CXX_FLAGS}")
     set_source_files_properties("${example_SRC_PATH}/simple_cpp.cpp" PROPERTIES COMPILE_FLAGS "${BASE_CXX_FLAGS}")
     add_executable (simple_cpp "${example_SRC_PATH}/simple_cpp.cpp" "${example_SRC_PATH}/${example_PROG_UTIL}" "${example_SRC_PATH}/utils.h" )
 
@@ -562,7 +581,7 @@ else()
         )
 
         foreach(AB_SERVER_FILE ${AB_SERVER_FILES})
-            set_source_files_properties("${AB_SERVER_FILE}" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS}" )
+            set_source_files_properties("${AB_SERVER_FILE}" PROPERTIES COMPILE_FLAGS "${C99_FLAGS} ${BASE_C_FLAGS} ${C11_CHECK}" )
         endforeach()
 
         add_executable(ab_server ${AB_SERVER_FILES})
