@@ -591,6 +591,50 @@ int platform_init(void)
 
 void platform_teardown(void)
 {
+    struct timespec wait_time;
+    struct timespec remainder;
+    int done = 1;
+    int rc = PLCTAG_STATUS_OK;
+
+    if(ms < 0) {
+        pdebug(DEBUG_WARN, "called with negative time %d!", ms);
+        return PLCTAG_ERR_BAD_PARAM;
+    }
+
+    wait_time.tv_sec = ms/1000;
+    wait_time.tv_nsec = ((long)ms % 1000)*1000000; /* convert to nanoseconds */
+
+    do {
+        int rc = nanosleep(&wait_time, &remainder);
+        if(rc < 0 && errno == EINTR) {
+            /* we were interrupted, keep going. */
+            wait_time = remainder;
+            done = 0;
+        } else {
+            done = 1;
+
+            if(rc < 0) {
+                /* error condition. */
+                rc = PLCTAG_ERR_BAD_REPLY;
+            }
+        }
+    } while(!done);
+
+    return rc;
+
+
+    // rc = nanosleep(&wait_time, &remainder);
+    // if(rc < 0 && errno != EINTR) {
+    //     rc = PLCTAG_ERR_BAD_REPLY;
+    // }
+
+    // return rc;
+    // struct timeval tv;
+
+    // tv.tv_sec = ms/1000;
+    // tv.tv_usec = (ms % 1000)*1000;
+
+    // return select(0,NULL,NULL,NULL, &tv);
 }
 
 /*
