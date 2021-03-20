@@ -1303,7 +1303,7 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
 
 #ifndef PLATFORM_IS_WINDOWS
     timeval_wait.tv_sec = 0;
-    timeval_wait.tv_usec = wait_time_ms * 1000;
+    timeval_wait.tv_usec = (long)wait_time_ms * 1000;
 #else
     timeval_wait.tv_sec = 0;
     timeval_wait.tv_usec = (long)wait_time_ms * (long)1000;

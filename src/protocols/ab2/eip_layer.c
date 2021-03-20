@@ -293,8 +293,8 @@ int eip_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_cap
     }
 
     /* what kind of request is it? Cheat and peak at the payload. */
-    address_item_type = (uint16_t)(buffer[EIP_HEADER_SIZE + 8])
-                        + (uint16_t)(((uint16_t)buffer[EIP_HEADER_SIZE + 9]) << 8);
+    address_item_type = (uint16_t)((uint16_t)(buffer[EIP_HEADER_SIZE + 8])
+                        + (uint16_t)(((uint16_t)buffer[EIP_HEADER_SIZE + 9]) << 8));
 
     if(address_item_type == 0) {
         /* unconnected message. */
