@@ -227,6 +227,12 @@ int socket_tcp_connect(sock_p s, const char *host, int port)
 
     pdebug(DEBUG_DETAIL,"Starting.");
 
+    /* do not allow a second attempt while this socket is already connected. */
+    if(s->fd != INVALID_SOCKET) {
+        pdebug(DEBUG_WARN, "Socket is already connected!");
+        return PLCTAG_ERR_BUSY;
+    }
+
     mem_set(&ips[0], 0, (int)sizeof(ips));
 
     /* Open a socket for communication with the gateway. */
@@ -235,6 +241,7 @@ int socket_tcp_connect(sock_p s, const char *host, int port)
     /* check for errors */
     if(fd < 0) {
         pdebug(DEBUG_ERROR,"Socket creation failed, err: %d", SOCK_ERR);
+        s->fd = INVALID_SOCKET;
         return PLCTAG_ERR_OPEN;
     }
 
@@ -358,14 +365,16 @@ int socket_tcp_connect(sock_p s, const char *host, int port)
         if(rc == 0) {
             pdebug(DEBUG_DETAIL, "Attempt to connect to %s succeeded.", addr_buf);
             done = 1;
+            break;
         } else {
             int err = SOCK_ERR;
             pdebug(DEBUG_DETAIL, "Attempt to connect to %s failed, err: %d", addr_buf, err);
             i++;
         }
-    } while(!done && i < num_ips);
+    } while(i < num_ips);
 
     if(!done) {
+        pdebug(DEBUG_DETAIL, "Unable to connect, closing socket.");
         SOCK_CLOSE(fd);
         pdebug(DEBUG_ERROR, "Unable to connect to any gateway host IP address!");
         return PLCTAG_ERR_OPEN;
@@ -403,10 +412,26 @@ int socket_tcp_connect(sock_p s, const char *host, int port)
     s->port = port;
 
     /* put it on the list. */
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
-        s->next = socket_list;
-        socket_list = s;
+        /* make sure we do not add the socket more than once. */
+        sock_p *walker = &socket_list;
+
+        while(*walker && *walker != s) {
+            walker = &((*walker)->next);
+        }
+
+        pdebug(DEBUG_DETAIL, "socket_list before %p", socket_list);
+        if(*walker == NULL) {
+            pdebug(DEBUG_DETAIL, "Socket was not on the list, adding it at the end.");
+            *walker = s;
+            s->next = NULL;
+        } else {
+            pdebug(DEBUG_DETAIL, "Socket was already on the list.");
+        }
+        pdebug(DEBUG_DETAIL, "socket_list after %p", socket_list);
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     /* we might need an event. */
     socket_event_loop_wake();
@@ -448,30 +473,6 @@ extern int socket_tcp_read(sock_p s, uint8_t *buf, int size)
         }
     }
 
-//#ifdef PLATFORM_IS_WINDOWS
-//    rc = recv(s->fd, (char*)buf, size, 0);
-//    if(rc < 0) {
-//        err = WSAGetLastError();
-//        if(err == WSAEWOULDBLOCK) {
-//            rc = 0;
-//        } else {
-//            pdebug(DEBUG_WARN,"Socket read error: rc=%d, err=%d", rc, err);
-//            rc = PLCTAG_ERR_READ;
-//        }
-//    }
-//#else
-//    rc = (int)read(s->fd, buf, INT_TO_SIZE_T(size));
-//    if(rc < 0) {
-//        err = errno;
-//        if(err == EAGAIN || err == EWOULDBLOCK) {
-//            rc = 0;
-//        } else {
-//            pdebug(DEBUG_WARN,"Socket read error: rc=%d, err=%d", rc, err);
-//            rc = PLCTAG_ERR_READ;
-//        }
-//    }
-//#endif
-
     pdebug(DEBUG_DETAIL, "Done.");
 
     return rc;
@@ -495,20 +496,6 @@ extern int socket_tcp_write(sock_p s, uint8_t *buf, int size)
         return PLCTAG_ERR_TOO_SMALL;
     }
 
-    /* The socket is non-blocking. */
-//#ifdef PLATFORM_IS_WINDOWS
-//    /* no signals in Windows. */
-//    rc = (int)send(s->fd, buf, size, 0);
-//#else
-//    #ifdef PLATFORM_IS_BSD
-//    /* On *BSD and macOS, the socket option is set to prevent SIGPIPE. */
-//    rc = (int)write(s->fd, buf, (size_t)(unsigned int)size);
-//    #else
-//    /* on Linux, we use MSG_NOSIGNAL */
-//    rc = (int)send(s->fd, buf, (size_t)(unsigned int)size, MSG_NOSIGNAL);
-//    #endif
-//#endif
-
     rc = SOCK_WRITE(s->fd, buf, size);
     if (rc < 0) {
         err = SOCK_ERR;
@@ -519,28 +506,6 @@ extern int socket_tcp_write(sock_p s, uint8_t *buf, int size)
             return PLCTAG_ERR_WRITE;
         }
     }
-
-//#ifdef PLATFORM_IS_WINDOWS
-//    if(rc < 0) {
-//        err = WSAGetLastError();
-//        if(err == WSAEWOULDBLOCK) {
-//            return PLCTAG_ERR_NO_DATA;
-//        } else {
-//            pdebug(DEBUG_WARN, "Socket write error: rc=%d, err=%d", rc, err);
-//            return PLCTAG_ERR_WRITE;
-//        }
-//    }
-//#else
-//    if(rc < 0) {
-//        err = errno;
-//        if(err == EAGAIN || err == EWOULDBLOCK) {
-//            return PLCTAG_ERR_NO_DATA;
-//        } else {
-//            pdebug(DEBUG_WARN, "Socket write error: rc=%d, err=%d", rc, err);
-//            return PLCTAG_ERR_WRITE;
-//        }
-//    }
-//#endif
 
     pdebug(DEBUG_DETAIL, "Done.");
 
@@ -570,16 +535,25 @@ extern int socket_close(sock_p sock)
      * These are changed by the event thread too, so
      * all this has to be in the mutex.
      */
+
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
         sock_p *walker = &socket_list;
+
+        pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
 
         while(*walker && *walker != sock) {
             walker = &((*walker)->next);
         }
 
         if(*walker && *walker == sock) {
+            pdebug(DEBUG_DETAIL, "Socket found on the list.");
             *walker = sock->next;
-        } /* else not on the list. */
+        } else {
+            pdebug(DEBUG_DETAIL, "Socket not on the list.");
+        }
+
+        pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
 
         /* fix up the iterator. */
         if(global_socket_iterator == sock) {
@@ -587,28 +561,35 @@ extern int socket_close(sock_p sock)
             global_socket_iterator = sock->next;
         }
 
+        pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
+
         /* clear any link left in the socket object. */
         sock->next = NULL;
 
         /* clear the FD sets */
+        pdebug(DEBUG_DETAIL, "Clearing socket from file descriptor sets.");
         FD_CLR(sock->fd, &global_read_fds);
         FD_CLR(sock->fd, &global_write_fds);
 
         /* force a recalculation of the FD set and max socket if we are the top one. */
         if(sock->fd >= max_socket_fd) {
+            pdebug(DEBUG_DETAIL, "Socket was the max socket ID, forcing recalculation.");
             atomic_int_add(&recalculate_fd_set_pressure, (int)FD_SET_RECALC_MAX_PRESSURE);
         } else {
             /* not as urgent, recalculate eventually. */
+            pdebug(DEBUG_DETAIL, "Socket was not the max socket ID, increasing recalculation pressure.");
             atomic_int_add(&recalculate_fd_set_pressure, (int)FD_SET_RECALC_PRESSURE_INCREMENT);
         }
 
         /* try to do this gently */
+        pdebug(DEBUG_DETAIL, "Shutdown socket.");
         if(shutdown(sock->fd, SHUT_RDWR)) {
             pdebug(DEBUG_WARN, "Error while shutting down socket: %d!", errno);
             rc = PLCTAG_ERR_CLOSE;
         }
 
         /* close either way */
+        pdebug(DEBUG_DETAIL, "Closing socket.");
         if(SOCK_CLOSE(sock->fd)) {
             pdebug(DEBUG_WARN, "Error while closing socket: %d!", errno);
             rc = PLCTAG_ERR_CLOSE;
@@ -619,7 +600,10 @@ extern int socket_close(sock_p sock)
         /* make sure the event thread will not try to handle this. */
         connection_thread = sock->connection_thread;
         sock->connection_thread = NULL;
+
+        pdebug(DEBUG_DETAIL, "Leaving socket mutex.");
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     /*
      * now that the socket is removed from the list, the event thread
@@ -749,7 +733,15 @@ int socket_callback_when_connection_ready(sock_p sock, void (*callback)(void *co
         return PLCTAG_ERR_NULL_PTR;
     }
 
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
+        /* are we already attempting to connect? */
+        if(sock->connection_thread) {
+            pdebug(DEBUG_WARN, "Connection thread already exists!");
+            rc = PLCTAG_ERR_BUSY;
+            break;
+        }
+
         /* clean up anything left over. */
         if(sock->host) {
             mem_free(sock->host);
@@ -787,6 +779,7 @@ int socket_callback_when_connection_ready(sock_p sock, void (*callback)(void *co
             break;
         }
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     pdebug(DEBUG_INFO, "Done for %s:%d.", host, port);
 
@@ -807,6 +800,7 @@ int socket_callback_when_read_done(sock_p sock, void (*callback)(void *context),
         return PLCTAG_ERR_NULL_PTR;
     }
 
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
         /* if we are enabling the event, set the FD and raise the recalc count. */
         if(callback) {
@@ -845,6 +839,7 @@ int socket_callback_when_read_done(sock_p sock, void (*callback)(void *context),
         /* wake up the socket select() that could be waiting. */
         socket_event_loop_wake();
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     pdebug(DEBUG_INFO, "Done.");
 
@@ -863,6 +858,7 @@ int socket_callback_when_write_done(sock_p sock, void (*callback)(void *context)
         return PLCTAG_ERR_NULL_PTR;
     }
 
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
         /* if we are enabling the event, set the FD and raise the recalc count. */
         if(callback) {
@@ -895,6 +891,7 @@ int socket_callback_when_write_done(sock_p sock, void (*callback)(void *context)
         /* wake up the socket select() that could be waiting. */
         socket_event_loop_wake();
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     pdebug(DEBUG_INFO, "Done.");
 
@@ -1207,12 +1204,15 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
 
         pdebug(DEBUG_DETAIL, "Recalculating the select fd sets.");
 
+        pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
         critical_block(socket_event_mutex) {
 
             max_socket_fd = -1;
 
             FD_ZERO(&global_read_fds);
             FD_ZERO(&global_write_fds);
+
+            pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
 
             for(sock_p tmp_sock = socket_list; tmp_sock; tmp_sock = tmp_sock->next) {
                 if(tmp_sock->read_done_callback) {
@@ -1234,11 +1234,14 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
                 }
             }
 
+            pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
+
             /* make sure the wake channel is in the read set. */
             pdebug(DEBUG_DETAIL, "Setting select() read fd set for wake fd %d.", wake_fds[0]);
             FD_SET(wake_fds[0], &global_read_fds);
             max_socket_fd = (max_socket_fd < wake_fds[0] ? wake_fds[0] : max_socket_fd);
         }
+        pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
         /*
          * subtract the number we had before.   Other threads may have
@@ -1254,20 +1257,32 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
     /* do we need to clean up any dead connection threads? */
     connection_thread_cleanup_count = atomic_int_load(&connect_thread_complete_count);
     if(connection_thread_cleanup_count > 0) {
+        pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
         critical_block(socket_event_mutex) {
             sock_p sock = socket_list;
 
+            pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
+
             while(sock) {
+                pdebug(DEBUG_DETAIL, "Checking socket %p for a connection thread.", sock);
+
                 /* does this socket have a completed connection thread? */
                 if(sock->connection_thread && (atomic_bool_load(&(sock->connection_thread_done)) == true)) {
                     pdebug(DEBUG_INFO, "Cleaning up connection thread for socket %s:%d.", sock->host, sock->port);
+
                     thread_join(sock->connection_thread);
                     thread_destroy(&(sock->connection_thread));
+
                     sock->connection_thread = NULL;
+                    atomic_bool_store(&(sock->connection_thread_done), false);
                 }
+
                 sock = sock->next;
             }
+
+            pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
         }
+        pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
         /*
          * subtract the number we had before.   Other threads may have
@@ -1282,6 +1297,7 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
 
     /* copy the fd sets safely */
     pdebug(DEBUG_DETAIL, "Copy the FD sets for safety.");
+    pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
     critical_block(socket_event_mutex) {
         local_read_fds = global_read_fds;
         local_write_fds = global_write_fds;
@@ -1290,6 +1306,7 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
 
         max_socket_fd = (wake_fds[0] > max_socket_fd ? wake_fds[0] : max_socket_fd);
     }
+    pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
 
     pdebug(DEBUG_DETAIL, "Calculating the wait time.");
 
@@ -1353,11 +1370,16 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
         /* is there still work to do? */
         if(num_signaled_fds > 0) {
             /* the callbacks can mutate the socket list and the global FD sets. */
+            pdebug(DEBUG_DETAIL, "getting ready to lock socket_event_mutex (%p).", socket_event_mutex);
             critical_block(socket_event_mutex) {
                 /* loop, but use an iterator so that sockets can be closed while in the mutex. */
+                pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
                 for(global_socket_iterator = socket_list; global_socket_iterator; (global_socket_iterator ? global_socket_iterator = global_socket_iterator->next : NULL)) {
                     sock_p sock = global_socket_iterator;
                     int rc = PLCTAG_STATUS_OK;
+
+                    pdebug(DEBUG_DETAIL, "socket = %p", sock);
+                    pdebug(DEBUG_DETAIL, "global_socket_iterator = %p", global_socket_iterator);
 
                     if(sock->read_done_callback && FD_ISSET(sock->fd, &local_read_fds)) {
                         pdebug(DEBUG_DETAIL, "Socket %d has data to read.", sock->fd);
@@ -1459,7 +1481,9 @@ void socket_event_loop_tickler(int64_t next_wake_time, int64_t current_time)
                         /* if the byte_count was zero then we keep trying. */
                     }
                 }
+                pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
             }
+            pdebug(DEBUG_DETAIL, "Unlocked socket_event_mutex (%p).", socket_event_mutex);
         }
     }
 }
@@ -1499,7 +1523,10 @@ int socket_event_loop_init(void)
     /* set the fds for the waker channel */
     FD_SET(wake_fds[0], &global_read_fds);
 
+    pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
     socket_list = NULL;
+    pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
+
     global_socket_iterator = NULL;
 
     atomic_int_store(&connect_thread_complete_count, (int)0);
@@ -1537,7 +1564,10 @@ void socket_event_loop_teardown(void)
     FD_ZERO(&global_write_fds);
 
     /* if there were sockets left, oh well, leak away! */
+    pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
     socket_list = NULL;
+    pdebug(DEBUG_DETAIL, "socket_list = %p", socket_list);
+
     global_socket_iterator = NULL;
 
     atomic_int_store(&recalculate_fd_set_pressure, (int32_t)0);
