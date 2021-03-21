@@ -323,7 +323,7 @@ int slc_handle_read_response_callback(void *context, uint8_t *buffer, int buffer
             TRY_GET_BYTE(buffer, buffer_capacity, offset, tag->base_tag.data[tag->trans_offset + i]);
         }
 
-        tag->trans_offset += (uint16_t)(unsigned int)resp_data_size;
+        tag->trans_offset = (uint16_t)(tag->trans_offset + (uint16_t)(unsigned int)resp_data_size);
 
         /* do we have more work to do? */
         if(tag->trans_offset < tag->base_tag.size) {
@@ -458,7 +458,7 @@ int slc_build_write_request_callback(void *context, uint8_t *buffer, int buffer_
         if(rc != PLCTAG_STATUS_OK) break;
 
         /* update the amount transfered. */
-        tag->trans_offset += (uint16_t)(unsigned int)trans_size;
+        tag->trans_offset = (uint16_t)(tag->trans_offset + (uint16_t)(unsigned int)trans_size);
 
         pdebug(DEBUG_DETAIL, "Write request packet:");
         pdebug_dump_bytes(DEBUG_DETAIL, buffer + *payload_start, req_off - *payload_start);
