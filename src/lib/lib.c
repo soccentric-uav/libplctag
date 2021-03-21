@@ -237,16 +237,14 @@ THREAD_FUNC(tag_tickler_func)
                         if(tag->tag_is_dirty) {
                             /* abort any in flight read if the tag is dirty. */
                             if(tag->read_in_flight) {
-                                if(tag->vtable->abort) {
-                                    tag->vtable->abort(tag);
-                                }
+                                pdebug(DEBUG_DETAIL, "Aborting in-flight read!");
 
-                                pdebug(DEBUG_DETAIL, "Aborting in-flight automatic read!");
+                                plc_tag_abort(tag->tag_id);
 
                                 tag->read_complete = 0;
                                 tag->read_in_flight = 0;
 
-                                /* FIXME - should we report an ABORT event here? */
+                                /* FIXME - should this be reported as an abort, that might be confusing to a callback. */
                                 events[PLCTAG_EVENT_ABORTED] = 1;
                             }
 
@@ -260,10 +258,8 @@ THREAD_FUNC(tag_tickler_func)
                                 pdebug(DEBUG_DETAIL, "Triggering automatic write start.");
 
                                 /* clear out any outstanding reads. */
-                                if(tag->read_in_flight && tag->vtable->abort) {
-                                    tag->vtable->abort(tag);
-                                    tag->read_in_flight = 0;
-                                }
+                                plc_tag_abort(tag->tag_id);
+                                tag->read_in_flight = 0;
 
                                 tag->tag_is_dirty = 0;
                                 tag->write_in_flight = 1;
@@ -628,8 +624,7 @@ LIB_EXPORT int32_t plc_tag_create(const char *attrib_str, int timeout)
     }
 
     /*
-     * FIXME - this really should be here???  Maybe not?  But, this is
-     * the only place it can be without making every protocol type do this automatically.
+     * TODO - this should be refactored into a common routine.
      */
     if(!tag->ext_mutex) {
         rc = mutex_create(&(tag->ext_mutex));
@@ -697,24 +692,37 @@ LIB_EXPORT int32_t plc_tag_create(const char *attrib_str, int timeout)
      */
     attr_destroy(attribs);
 
+    /* map the tag to a tag ID */
+    id = add_tag_lookup(tag);
+
+    /* if the mapping failed, then punt */
+    if(id < 0) {
+        pdebug(DEBUG_ERROR, "Unable to map tag %p to lookup table entry, rc=%s", tag, plc_tag_decode_error(id));
+        rc_dec(tag);
+        return id;
+    }
+
+    /* save this for later. */
+    tag->tag_id = id;
+
+    pdebug(DEBUG_INFO, "Mapped tag to ID %d", id);
+
+    debug_set_tag_id(id);
+
     /*
     * if there is a timeout, then loop until we get
     * an error or we timeout.
     */
-    if(timeout) {
+    if(timeout > 0) {
         int64_t timeout_time = timeout + time_ms();
         int64_t start_time = time_ms();
 
         /* get the tag status. */
-        rc = tag->vtable->status(tag);
+        rc = plc_tag_status(id);
 
         while(rc == PLCTAG_STATUS_PENDING && timeout_time > time_ms()) {
-            /* give some time to the tickler function. */
-            if(tag->vtable->tickler) {
-                tag->vtable->tickler(tag);
-            }
-
-            rc = tag->vtable->status(tag);
+            /* this also calls the tickler function. */
+            rc = plc_tag_status(id);
 
             /*
              * terminate early and do not wait again if the
@@ -724,7 +732,7 @@ LIB_EXPORT int32_t plc_tag_create(const char *attrib_str, int timeout)
                 break;
             }
 
-            sleep_ms(1); /* MAGIC */
+            sleep_ms(2); /* MAGIC */
         }
 
         /*
@@ -735,7 +743,7 @@ LIB_EXPORT int32_t plc_tag_create(const char *attrib_str, int timeout)
          */
         if(rc == PLCTAG_STATUS_PENDING) {
             pdebug(DEBUG_WARN,"Timeout waiting for tag to be ready!");
-            tag->vtable->abort(tag);
+            plc_tag_abort(id);
             rc = PLCTAG_ERR_TIMEOUT;
         }
 
@@ -752,23 +760,6 @@ LIB_EXPORT int32_t plc_tag_create(const char *attrib_str, int timeout)
 
         pdebug(DEBUG_INFO,"tag set up elapsed time %" PRId64 "ms",(time_ms()-start_time));
     }
-
-    /* map the tag to a tag ID */
-    id = add_tag_lookup(tag);
-
-    /* if the mapping failed, then punt */
-    if(id < 0) {
-        pdebug(DEBUG_ERROR, "Unable to map tag %p to lookup table entry, rc=%s", tag, plc_tag_decode_error(id));
-        rc_dec(tag);
-        return id;
-    }
-
-    /* save this for later. */
-    tag->tag_id = id;
-
-    debug_set_tag_id(id);
-
-    pdebug(DEBUG_INFO, "Returning mapped tag ID %d", id);
 
     pdebug(DEBUG_INFO,"Done.");
 
@@ -1124,17 +1115,19 @@ LIB_EXPORT int plc_tag_destroy(int32_t tag_id)
     pdebug(DEBUG_DETAIL, "Aborting any in-flight operations.");
 
     critical_block(tag->api_mutex) {
-        if(!tag->vtable || !tag->vtable->abort) {
+        /* call this via the vtable. The tag is unmapped above. */
+        if(tag->vtable && tag->vtable->abort) {
+            /* Force a clean up. */
+            tag->vtable->abort(tag);
+        } else {
             pdebug(DEBUG_WARN,"Tag does not have a abort function!");
         }
-
-        /* Force a clean up. */
-        tag->vtable->abort(tag);
     }
 
     if(tag->callback) {
         pdebug(DEBUG_DETAIL, "Calling callback with PLCTAG_EVENT_DESTROYED.");
         tag->callback(tag_id, PLCTAG_EVENT_DESTROYED, PLCTAG_STATUS_OK);
+        tag->callback = NULL;
     }
 
     /* release the reference outside the mutex. */
@@ -1222,9 +1215,7 @@ LIB_EXPORT int plc_tag_read(int32_t id, int timeout)
 
                 pdebug(DEBUG_WARN,"Response from read command returned error %s!", plc_tag_decode_error(rc));
 
-                if(tag->vtable->abort) {
-                    tag->vtable->abort(tag);
-                }
+                plc_tag_abort(id);
             }
 
             is_done = true;
@@ -1242,6 +1233,7 @@ LIB_EXPORT int plc_tag_read(int32_t id, int timeout)
         int64_t start_time = time_ms();
 
         while(rc == PLCTAG_STATUS_PENDING && timeout_time > time_ms()) {
+            /* this also calls the tickler function. */
             rc = plc_tag_status(id);
 
             /*
@@ -1419,9 +1411,7 @@ LIB_EXPORT int plc_tag_write(int32_t id, int timeout)
 
                 pdebug(DEBUG_WARN,"Response from write command returned error %s!", plc_tag_decode_error(rc));
 
-                if(tag->vtable->abort) {
-                    tag->vtable->abort(tag);
-                }
+                plc_tag_abort(id);
             }
 
             is_done = 1;
@@ -1438,6 +1428,7 @@ LIB_EXPORT int plc_tag_write(int32_t id, int timeout)
         int64_t timeout_time = timeout + start_time;
 
         while(rc == PLCTAG_STATUS_PENDING && timeout_time > time_ms()) {
+            /* this also calls the tickler function. */
             rc = plc_tag_status(id);
 
             /*
