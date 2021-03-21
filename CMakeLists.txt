@@ -234,11 +234,11 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU")
         # the compiler supports the -Wstringop-overflow flag.
         # There is clearly a bug in the compiler that throws this warning inconsistently.
         # Suppress it for RELEASE builds.
-        MESSAGE(STATUS "Compiler supports string op overflow checking.  Suppress for Release builds.")
+        MESSAGE(STATUS "Compiler version ${COMPILER_VERSION} supports string op overflow checking.  Suppress for Release builds.")
         SET(STR_OP_OVERFLOW_ON "-Wstringop-overflow")
         SET(STR_OP_OVERFLOW_OFF "-Wno-stringop-overflow")
     else()
-        MESSAGE(STATUS "Compiler does not support string op overflow checking.")
+        MESSAGE(STATUS "Compiler version ${COMPILER_VERSION} does not support string op overflow checking.")
         SET(STR_OP_OVERFLOW_ON "")
         SET(STR_OP_OVERFLOW_OFF "")
     endif()
