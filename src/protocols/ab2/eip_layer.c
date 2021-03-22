@@ -67,6 +67,9 @@ struct eip_layer_state_s {
     uint32_t session_handle;
     uint64_t session_context;
 
+    /* is a connection in flight? */
+    bool connect_in_flight;
+
     /* save this for checking. */
     int payload_start;
 };
@@ -133,6 +136,8 @@ int eip_layer_initialize(plc_layer_p layer_arg)
     state->session_handle = 0;
     state->session_context = (uint64_t)rand();
 
+    state->connect_in_flight = false;
+
     pdebug(DEBUG_INFO, "Done for PLC %s.", plc_get_key(state->plc));
 
     return rc;
@@ -192,6 +197,8 @@ int eip_layer_connect(plc_layer_p layer_arg, uint8_t *buffer, int buffer_capacit
         pdebug_dump_bytes(DEBUG_INFO, buffer + *payload_start, *payload_end - *payload_start);
 
         pdebug(DEBUG_DETAIL, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
+
+        state->connect_in_flight = true;
 
         /* all good, but we need to send it. */
         rc = PLCTAG_STATUS_PENDING;
@@ -274,6 +281,12 @@ int eip_layer_build_layer(plc_layer_p layer_arg, uint8_t *buffer, int buffer_cap
     (void)req_id;
 
     pdebug(DEBUG_INFO, "Starting for PLC %s with payload_start=% and payload_end=%d.", plc_get_key(state->plc), *payload_start, *payload_end);
+
+    /* catch case where this layer is connecting. */
+    if(state->connect_in_flight == true) {
+        pdebug(DEBUG_INFO, "Connection packet already built.");
+        return PLCTAG_STATUS_OK;
+    }
 
     /* check to see if we are connected or not. */
     if(!state->base_layer.is_connected) {
@@ -423,14 +436,20 @@ int eip_layer_process_response(plc_layer_p layer_arg, uint8_t *buffer, int buffe
 
         /* what we do depends on the command */
         if(command == REGISTER_SESSION_CMD) {
-            /* copy the information into the state. */
-            state->session_handle = session_handle;
+            if(state->connect_in_flight == true) {
+                /* copy the information into the state. */
+                state->session_handle = session_handle;
 
-            state->base_layer.is_connected = true;
+                state->base_layer.is_connected = true;
+                state->connect_in_flight = false;
 
-            /* signal that we have consumed the whole payload. */
-            *payload_end = 0;
-            *payload_start = 0;
+                /* signal that we have consumed the whole payload. */
+                *payload_end = 0;
+                *payload_start = 0;
+            } else {
+                pdebug(DEBUG_WARN, "Unexpected session registration response!");
+                rc = PLCTAG_ERR_BAD_REPLY;
+            }
         } else {
             /* other layers will need to process this. */
             *payload_start = EIP_HEADER_SIZE;
