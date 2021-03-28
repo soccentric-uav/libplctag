@@ -76,6 +76,8 @@ static int eip_layer_initialize(void *context);
 static int eip_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 // static int eip_layer_disconnect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 static int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int eip_layer_accept_requests(void *context, plc_request_p *requests);
+static int eip_layer_abort_request(void *context, plc_request_p request);
 static int eip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int eip_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int eip_layer_destroy_layer(void *context);
@@ -109,6 +111,8 @@ int eip_layer_setup(plc_p plc, int layer_index, attr attribs)
                        eip_layer_connect,
                        /*eip_layer_disconnect*/ NULL,
                        eip_layer_reserve_space,
+                       eip_layer_accept_requests,
+                       eip_layer_abort_request,
                        eip_layer_fix_up_request,
                        eip_layer_process_response,
                        eip_layer_destroy_layer);
@@ -245,6 +249,29 @@ int eip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity,
     pdebug(DEBUG_INFO, "Done with payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
 
     return rc;
+}
+
+
+
+int eip_layer_accept_requests(void *context, plc_request_p *requests)
+{
+    (void)context;
+    (void)requests;
+
+    pdebug(DEBUG_WARN, "Unsupported, this should not be called!");
+
+    return PLCTAG_ERR_UNSUPPORTED;
+}
+
+
+int eip_layer_abort_request(void *context, plc_request_p request)
+{
+    (void)context;
+    (void)request;
+
+    pdebug(DEBUG_WARN, "Unsupported, this should not be called!");
+
+    return PLCTAG_ERR_UNSUPPORTED;
 }
 
 

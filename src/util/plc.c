@@ -100,13 +100,6 @@ if(CONDITION) { \
     break; \
 }
 
-#define SPURIOUS_WAKEUP_IF(CONDITION, ...)  \
-if(CONDITION) { \
-    pdebug(DEBUG_INFO, __VA_ARGS__ ); \
-    rc = PLCTAG_STATUS_OK; \
-    break; \
-}
-
 #define CHECK_TERMINATION() \
 if(plc->is_terminating == true) { \
     pdebug(DEBUG_DETAIL, "PLC %s is terminating.", plc->key); \
@@ -116,7 +109,6 @@ if(plc->is_terminating == true) { \
 }
 
 
-
 struct plc_layer_s {
     void *context;
     bool is_connected;
@@ -124,11 +116,12 @@ struct plc_layer_s {
     int (*connect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end);
     int (*disconnect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end);
     int (*reserve_space)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
+    int (*accept_requests)(void *context, plc_request_p *requests);
+    int (*abort_request)(void *context, plc_request_p request);
     int (*fix_up_layer)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
     int (*process_response)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num);
     int (*destroy_layer)(void *context);
 };
-
 
 
 struct plc_s {
@@ -198,8 +191,8 @@ static void plc_heartbeat(plc_p plc);
 
 /* main dispatch states. */
 static int state_dispatch_requests(plc_p plc);
-static int state_reserve_space_for_tag_request(plc_p plc);
-static int state_build_tag_request(plc_p plc);
+static int state_reserve_space_for_request(plc_p plc);
+static int state_build_request(plc_p plc);
 static int state_tag_request_sent(plc_p plc);
 static int state_tag_response_ready(plc_p plc);
 
@@ -478,6 +471,8 @@ int plc_set_layer(plc_p plc,
                   int (*connect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end),
                   int (*disconnect)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end),
                   int (*reserve_space)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
+                  int (*accept_requests)(void *context, plc_request_p *requests),
+                  int (*abort_request)(void *context, plc_request_p request),
                   int (*fix_up_layer)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
                   int (*process_response)(void *context, uint8_t *buffer, int buffer_capacity, int *data_start, int *data_end, plc_request_id *req_num),
                   int (*destroy_layer)(void *context)
@@ -500,6 +495,8 @@ int plc_set_layer(plc_p plc,
     plc->layers[layer_index].connect = connect;
     plc->layers[layer_index].disconnect = disconnect;
     plc->layers[layer_index].reserve_space = reserve_space;
+    plc->layers[layer_index].accept_requests = accept_requests;
+    plc->layers[layer_index].abort_request = abort_request;
     plc->layers[layer_index].fix_up_layer = fix_up_layer;
     plc->layers[layer_index].process_response = process_response;
     plc->layers[layer_index].destroy_layer = destroy_layer;
@@ -747,8 +744,9 @@ int plc_stop_request(plc_p plc, plc_request_p request)
         if(*walker) {
             *walker = request->next;
         } else {
-            pdebug(DEBUG_INFO, "Request not on the PLC's list.");
-            rc = PLCTAG_ERR_NOT_FOUND;
+            pdebug(DEBUG_INFO, "Request not on the PLC's list, passing down to the top layer.");
+
+            rc = plc->layers[plc->num_layers - 1].abort_request(plc->layers[plc->num_layers -1].context, request);
         }
 
         /* TODO - do we need to call the main statemachine loop here? */
@@ -1021,7 +1019,7 @@ int state_dispatch_requests(plc_p plc)
             }
 
             /* we have requests and we are connected, dispatch! */
-            NEXT_STATE(state_reserve_space_for_tag_request);
+            NEXT_STATE(state_reserve_space_for_request);
             rc = PLCTAG_STATUS_PENDING;
             break;
         }
@@ -1038,12 +1036,10 @@ int state_dispatch_requests(plc_p plc)
         pdebug(DEBUG_WARN, "Unexpected error %s while trying to dispatch for PLC %s!", plc_tag_decode_error(rc), plc->key);
         return rc;
     }
-
-    /* TODO - handle errors. */
 }
 
 
-int state_reserve_space_for_tag_request(plc_p plc)
+int state_reserve_space_for_request(plc_p plc)
 {
     int rc = PLCTAG_STATUS_OK;
     int data_start = 0;
@@ -1060,18 +1056,27 @@ int state_reserve_space_for_tag_request(plc_p plc)
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while preparing layers for tag request for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        /* payload boundaries. */
-        plc->payload_start = data_start;
-        plc->payload_end = data_end;
-        plc->current_request_id = req_id;
+        /* see if the top layer will accept requests.   The layer will process as many as it wants. */
+        rc = plc->layers[plc->num_layers - 1].accept_requests(plc->layers[plc->num_layers - 1].context, &(plc->request_list));
 
-        /* set up request */
-        // plc->current_request = plc->request_list;
-        // plc->current_request->req_id = req_id;
+        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_BUSY, "Error %s received from top layer on accepting requests for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        NEXT_STATE(state_build_tag_request);
-        rc = PLCTAG_STATUS_PENDING;
-        break;
+        /* requests have been accepted, build the full stack packet. */
+        if(rc == PLCTAG_STATUS_OK) {
+            /* payload boundaries. */
+            plc->payload_start = data_start;
+            plc->payload_end = data_end;
+            plc->current_request_id = req_id;
+
+            /* build the request immediately */
+            NEXT_STATE(state_build_request);
+            rc = PLCTAG_STATUS_PENDING;
+        } else {
+            /* The top layer was busy, try again later. */
+            NEXT_STATE(state_dispatch_requests);
+            rc = PLCTAG_STATUS_OK;
+        }
+
     } while(0);
 
     pdebug(DEBUG_INFO, "Done for PLC %s.", plc->key);
@@ -1080,101 +1085,43 @@ int state_reserve_space_for_tag_request(plc_p plc)
 }
 
 
-int state_build_tag_request(plc_p plc)
+int state_build_request(plc_p plc)
 {
     int rc = PLCTAG_STATUS_OK;
     int data_start = plc->payload_start;
     int data_end = plc->payload_end;
-    int old_data_end = data_end;
+    // int old_data_end = data_end;
     plc_request_id req_id = plc->current_request_id;
-    struct plc_request_s *current_request = plc->request_list;
-    bool done = true;
-    bool first_try = true;
+    // struct plc_request_s *current_request = plc->request_list;
+    // bool done = true;
+    // bool first_try = true;
 
     pdebug(DEBUG_INFO, "Starting for PLC %s.", plc->key);
 
     do {
         CHECK_TERMINATION();
 
-        /* repeat for all requests possible. */
-
-        if(!current_request) {
-            pdebug(DEBUG_INFO, "Request removed from the queue before we got to it!");
-
-            plc->state_func = state_dispatch_requests;
-            rc = PLCTAG_STATUS_PENDING;
-            break;
-        }
-
-        pdebug(DEBUG_INFO, "Processing request %" REQ_ID_FMT ".", req_id);
-
-        /* build the tag request on top of the reserved space. */
-        rc = current_request->build_request(current_request->context, plc->data, plc->data_capacity, &data_start, &data_end, req_id);
-
-        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_TOO_SMALL, "Error %s building tag request for PLC %s!", plc_tag_decode_error(rc), plc->key);
-
-        /* was there enough space? */
-        if(rc == PLCTAG_ERR_TOO_SMALL) {
-            DISCONNECT_ON_ERROR(first_try == true, "Insufficient space for even one new request!");
-
-            pdebug(DEBUG_INFO, "Insufficient space to build for new request %" REQ_ID_FMT " for PLC %s.", req_id, plc->key);
-
-            /* signal that we are unable to continue. */
-            data_end = old_data_end;
-        } else {
-            pdebug(DEBUG_INFO, "Filling in layers for new request %" REQ_ID_FMT " for PLC %s.", req_id, plc->key);
-            old_data_end = data_end;
-        }
-
-        first_try = false;
-
-        /* set the request ID to match later. */
-        current_request->req_id = req_id;
-
-        /* fix up the layers. */
+        /* fix up the layers. The top layer will have the requests it has accepted. */
         for(int index = plc->num_layers - 1; index >= 0 && rc == PLCTAG_STATUS_OK; index--) {
             rc = plc->layers[index].fix_up_layer(plc->layers[index].context, plc->data, plc->data_capacity, &data_start, &data_end, &req_id);
         }
 
-        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_STATUS_PENDING, "Error %s while building request layers for PLC %s!", plc_tag_decode_error(rc), plc->key);
+        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while building request layers for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        /* if there was more space, see if we can find more requests. */
-        if(rc == PLCTAG_STATUS_OK) {
-            pdebug(DEBUG_INFO, "Done setting up layers and no further packets allowed for PLC %s", plc->key);
-            done = true;
-        } else { /* rc == PLCTAG_STATUS_PENDING */
-            /* check if we can find another request */
-            current_request = current_request->next;
+        CHECK_TERMINATION();
 
-            /* check to see if we have a valid request. */
-            if(current_request) {
-                pdebug(DEBUG_INFO, "Another request is possible to pack for PLC %s.", plc->key);
-                done = false;
-            } else {
-                pdebug(DEBUG_INFO, "Ran out of requests to handle.");
-                data_end = old_data_end;
-                done = true;
-            }
-        }
+        pdebug(DEBUG_INFO, "Sending packet for PLC %s.", plc->key);
 
-        if(done == true) {
-            /* check before we commit to sending a packet. */
-            CHECK_TERMINATION();
+        plc->payload_end = data_end;
 
-            pdebug(DEBUG_INFO, "Sending packet for PLC %s.", plc->key);
+        NEXT_STATE(state_tag_request_sent);
 
-            plc->payload_end = data_end;
+        rc = socket_callback_when_write_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, &(plc->payload_end));
 
-            NEXT_STATE(state_tag_request_sent);
+        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while setting up write completion callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-            rc = socket_callback_when_write_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, &(plc->payload_end));
-
-            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while setting up write completion callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
-
-            rc = PLCTAG_STATUS_OK;
-            break;
-        }
-    } while(!done);
+        rc = PLCTAG_STATUS_OK;
+    } while(0);
 
     pdebug(DEBUG_INFO, "Done for PLC %s.", plc->key);
 
@@ -1186,9 +1133,9 @@ int state_build_tag_request(plc_p plc)
 int state_tag_request_sent(plc_p plc)
 {
     int rc = PLCTAG_STATUS_OK;
-    int data_start = 0;
-    int data_end = 0;
-    plc_request_id req_id = 0;
+    // int data_start = 0;
+    // int data_end = 0;
+    // plc_request_id req_id = 0;
 
     pdebug(DEBUG_DETAIL, "Starting for PLC %s.", plc->key);
 
@@ -1196,22 +1143,23 @@ int state_tag_request_sent(plc_p plc)
         /* find out why we got called. */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+        /* if the socket was woken up spuriously, then wait again. */
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_tag_request_sent);
+            rc = socket_callback_when_write_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while setting up write completion callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s when trying to write socket in PLC %s!", plc_tag_decode_error(rc), plc->key)
 
-        /* all good!  We send the request.  Prepare the layers for receiving the response. */
-        for(int index=0; index < plc->num_layers && rc == PLCTAG_STATUS_OK; index++) {
-            rc = plc->layers[index].reserve_space(plc->layers[index].context, plc->data, plc->data_capacity, &data_start, &data_end, &req_id);
-        }
-
-        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s when trying to reserve space for response in PLC %s!", plc_tag_decode_error(rc), plc->key)
+        /* clear out the payload. */
+        plc->payload_end = plc->payload_start = 0;
 
         /* ready to wait for the response. */
         NEXT_STATE(state_tag_response_ready);
-
-        /* clear out the payload. */
-        plc->payload_end = plc->payload_start = 0;
 
         rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
 
@@ -1219,7 +1167,6 @@ int state_tag_request_sent(plc_p plc)
 
         /* wait for response. */
         rc = PLCTAG_STATUS_OK;
-        break;
     } while(0);
 
     pdebug(DEBUG_DETAIL, "Done for PLC %s.", plc->key);
@@ -1245,24 +1192,21 @@ int state_tag_response_ready(plc_p plc)
         /* check socket status.  Might be an error */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+        /* if the socket was woken up spuriously, then wait again. */
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_tag_response_ready);
+            rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while setting up read completion callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s from socket read for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        // pdebug(DEBUG_DETAIL, "Got possible full response:");
-        // pdebug_dump_bytes(DEBUG_DETAIL, plc->data, data_end);
-
-        /*
-         * If a layer returns PLCTAG_STATUS_PENDING, then we know that there are multiple
-         * sub-packets remaining within it and we need to continue.
-         */
-
+        /* process the layers from the bottom up. */
         for(int index=0; index < plc->num_layers && rc == PLCTAG_STATUS_OK; index++) {
             rc = plc->layers[index].process_response(plc->layers[index].context, plc->data, plc->data_capacity, &data_start, &data_end, &req_id);
-            if(rc == PLCTAG_STATUS_PENDING) {
-                done = false;
-                rc = PLCTAG_STATUS_OK;
-            }
         }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_PARTIAL, "Got error %s processing layers, restarting stack for PLC %s!", plc_tag_decode_error(rc), plc->key)
@@ -1274,7 +1218,6 @@ int state_tag_response_ready(plc_p plc)
             /* come back to this routine. */
             NEXT_STATE(state_tag_response_ready);
             rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
-
             DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Unexpected error %s setting socket read callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
             /* We know we need to wait, so there is nothing for the state runner to do. */
@@ -1282,47 +1225,9 @@ int state_tag_response_ready(plc_p plc)
             break;
         }
 
-        /* if we got here, then we have a valid response.
-         * The data_start and data_end bracket the payload for the tag.
-         *
-         * req_id is the internal ID for the request we want to match.
-         */
-
-        /* are there any requests and is it the right one? */
-        if(plc->request_list) {
-            if(req_id == plc->request_list->req_id) {
-                plc_request_p request = plc->request_list;
-
-                /* remove the request from the queue. We have a response. */
-                plc->request_list = plc->request_list->next;
-                request->next = NULL;
-
-                // data_start = plc->payload_start;
-                // data_end = plc->payload_end;
-
-                pdebug(DEBUG_DETAIL, "Attempting to process request %" REQ_ID_FMT " for PLC %s.", request->req_id, plc->key);
-
-                // pdebug(DEBUG_DETAIL, "Got possible response:");
-                // pdebug_dump_bytes(DEBUG_DETAIL, plc->data + data_start, data_end - data_start);
-
-                rc = request->process_response(request->context, plc->data, plc->data_capacity, &data_start, &data_end, request->req_id);
-
-                DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s processing request for tag for PLC %s!", plc_tag_decode_error(rc), plc->key);
-            } else {
-                /* nope */
-                pdebug(DEBUG_INFO, "Skipping response for aborted request %" REQ_ID_FMT " for PLC %s.", plc->current_request_id, plc->key);
-            }
-        } else {
-            pdebug(DEBUG_INFO, "No requests left to process for PLC %s.", plc->key);
-            done = true;
-        }
-
-        if(done == true) {
-            pdebug(DEBUG_INFO, "Finished processing response for PLC %s.", plc->key);
-            NEXT_STATE(state_dispatch_requests);
-            rc = PLCTAG_STATUS_PENDING;
-            break;
-        }
+        pdebug(DEBUG_INFO, "Finished processing response for PLC %s.", plc->key);
+        NEXT_STATE(state_dispatch_requests);
+        rc = PLCTAG_STATUS_PENDING;
     } while(!done);
 
     pdebug(DEBUG_DETAIL, "Done for PLC %s.", plc->key);
@@ -1396,7 +1301,15 @@ int state_build_layer_connect_request(plc_p plc)
         /* we can get here from the socket callback. Check the socket state. */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket connect is still PENDING for PLC %s.", plc->key);
+        /* if the socket was woken up spuriously, then wait again. */
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket connect is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_build_layer_connect_request);
+            rc = socket_callback_when_connection_ready(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->host, plc->port);
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s while setting up connection completion callback for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Connection failed with error %s for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
@@ -1475,22 +1388,21 @@ int state_layer_connect_request_sent(plc_p plc)
         /* is the socket in good shape? */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_layer_connect_request_sent);
+            rc = socket_callback_when_write_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up write callback for connect attempt for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Connection request write failed with error %s for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
         /* OK, so prep for receiving the response. */
         plc->payload_end = plc->payload_start = 0;
 
-        // for(int index=0; index < plc->current_layer_index && rc == PLCTAG_STATUS_OK; index++) {
-        //     rc = plc->layers[index].reserve_space(plc->layers[index].context, plc->data, plc->data_capacity, &(plc->payload_start), &(plc->payload_end), &(plc->current_request_id));
-        // }
-
-        // DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s preparing layers for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
-
-        // /* get ready to receive a response. */
-        // plc->payload_end = plc->payload_start = 0;
-
+        /* set callback when the response is done. */
         NEXT_STATE(state_layer_connect_response_ready);
         rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
 
@@ -1512,7 +1424,7 @@ int state_layer_connect_response_ready(plc_p plc)
     int rc = PLCTAG_STATUS_OK;
     int data_start = 0;
     int data_end = plc->payload_end;
-    bool retry_layer = false;
+    // bool retry_layer = false;
 
     pdebug(DEBUG_INFO, "Starting for PLC %s.", plc->key);
 
@@ -1522,35 +1434,36 @@ int state_layer_connect_response_ready(plc_p plc)
         /* is the socket in good shape? */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_layer_connect_response_ready);
+            rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up read callback for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Connection request read failed with error %s for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
         /* check to see if we got the entire response back. */
         for(int index=0; index <= plc->current_layer_index && rc == PLCTAG_STATUS_OK; index++) {
             rc = plc->layers[index].process_response(plc->layers[index].context, plc->data, plc->data_capacity, &(data_start), &(data_end), &(plc->current_request_id));
-            if(rc == PLCTAG_STATUS_PENDING) {
-                pdebug(DEBUG_INFO, "Connection attempt rejected, trying again.");
-                retry_layer = true;
-                rc = PLCTAG_STATUS_OK;
-            }
         }
 
-        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_TOO_SMALL, "Error %s processing layer responses for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
+        DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_STATUS_PENDING && rc != PLCTAG_ERR_PARTIAL, "Error %s processing layer responses for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        if(rc == PLCTAG_ERR_TOO_SMALL) {
+        if(rc == PLCTAG_ERR_PARTIAL) {
             /* we got a partial packet, wait for more data. */
             NEXT_STATE(state_layer_connect_response_ready);
             rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
-
             DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up read complete callback for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
             /* wait */
             rc = PLCTAG_STATUS_OK;
             break;
-        }
-
-        if(retry_layer == false) {
+        } else if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Connection attempt failed for layer %d but is retryable.", plc->current_layer_index);
+        } else {
             pdebug(DEBUG_INFO, "Connection attempt succeeded, going to next layer %d.", plc->current_layer_index + 1);
 
             plc->layers[plc->current_layer_index].is_connected = true;
@@ -1561,7 +1474,6 @@ int state_layer_connect_response_ready(plc_p plc)
 
         NEXT_STATE(state_build_layer_connect_request);
         rc = PLCTAG_STATUS_PENDING;
-        break;
     } while(0);
 
     pdebug(DEBUG_INFO, "Done for PLC %s.", plc->key);
@@ -1614,7 +1526,7 @@ int state_build_layer_disconnect_request(plc_p plc)
     do {
         /* find the first layer needing to disconnect. */
         while(plc->current_layer_index >= 0 && (plc->layers[plc->current_layer_index].is_connected == false || !plc->layers[plc->current_layer_index].disconnect)) {
-            pdebug(DEBUG_DETAIL, "Skipping layer %d as it has no disconnect behavior.", plc->current_layer_index);
+            pdebug(DEBUG_DETAIL, "Skipping layer %d as it has no disconnect behavior or is disconnected already.", plc->current_layer_index);
             plc->current_layer_index--;
         }
 
@@ -1684,7 +1596,14 @@ int state_layer_disconnect_request_sent(plc_p plc)
         /* is the socket in good shape? */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket write is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_layer_disconnect_request_sent);
+            rc = socket_callback_when_write_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up write callback for connect attempt for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         RESET_ON_ERROR(rc != PLCTAG_STATUS_OK, "Disconnection request write failed with error %s for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
@@ -1719,7 +1638,14 @@ int state_layer_disconnect_response_ready(plc_p plc)
         /* is the socket in good shape? */
         rc = socket_status(plc->socket);
 
-        SPURIOUS_WAKEUP_IF(rc == PLCTAG_STATUS_PENDING, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+        if(rc == PLCTAG_STATUS_PENDING) {
+            pdebug(DEBUG_INFO, "Spurious wakeup, socket read is still PENDING for PLC %s.", plc->key);
+            NEXT_STATE(state_layer_disconnect_response_ready);
+            rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
+            DISCONNECT_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up read callback for connect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
 
         RESET_ON_ERROR(rc != PLCTAG_STATUS_OK, "Disconnection request read failed with error %s for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
@@ -1728,13 +1654,13 @@ int state_layer_disconnect_response_ready(plc_p plc)
             rc = plc->layers[index].process_response(plc->layers[index].context, plc->data, plc->data_capacity, &(data_start), &(data_end), &(plc->current_request_id));
         }
 
-        RESET_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_TOO_SMALL, "Error %s processing layer responses for disconnect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
+        RESET_ON_ERROR(rc != PLCTAG_STATUS_OK && rc != PLCTAG_ERR_PARTIAL, "Error %s processing layer responses for disconnect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
-        if(rc == PLCTAG_ERR_TOO_SMALL) {
+        if(rc == PLCTAG_ERR_PARTIAL) {
             /* we got a partial packet, wait for more data. */
+            pdebug(DEBUG_INFO, "Partial data packet received, waiting for more data.");
             NEXT_STATE(state_layer_disconnect_response_ready);
             rc = socket_callback_when_read_done(plc->socket, (void(*)(void*))plc_state_runner, plc, plc->data, plc->data_capacity, &(plc->payload_end));
-
             RESET_ON_ERROR(rc != PLCTAG_STATUS_OK, "Error %s setting up read complete callback for disconnect response for PLC %s!", plc_tag_decode_error(rc), plc->key);
 
             /* wait */

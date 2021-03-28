@@ -94,6 +94,8 @@
 struct cip_layer_state_s {
     plc_p plc;
 
+    plc_request_p request_in_flight;
+
     bool forward_open_ex_enabled;
 
     bool is_connected;
@@ -120,7 +122,9 @@ static int cip_layer_initialize(void *context);
 static int cip_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 static int cip_layer_disconnect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 static int cip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int cip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int cip_layer_accept_requests(void *context, plc_request_p *requests);
+static int cip_layer_abort_request(void *context, plc_request_p request);
+static int cip_layer_build_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int cip_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int cip_layer_destroy_layer(void *context);
 
@@ -214,7 +218,9 @@ int cip_layer_setup(plc_p plc, int layer_index, attr attribs)
                        cip_layer_connect,
                        cip_layer_disconnect,
                        cip_layer_reserve_space,
-                       cip_layer_fix_up_request,
+                       cip_layer_accept_requests,
+                       cip_layer_abort_request,
+                       cip_layer_build_request,
                        cip_layer_process_response,
                        cip_layer_destroy_layer);
     if(rc != PLCTAG_STATUS_OK) {
@@ -240,18 +246,9 @@ int cip_layer_initialize(void *context)
     pdebug(DEBUG_INFO, "Starting.");
 
     /* fill back in a few things. */
+    state->request_in_flight = NULL;
     state->is_connected = false;
-
     state->cip_header_start_offset = 0;
-
-    // if(state->conn_params == 0) {
-    //     if(state->forward_open_ex_enabled == true) {
-    //         state->conn_params = CIP_CONN_PARAM_EX | (uint32_t)CIP_MAX_EX_PAYLOAD;
-    //     } else {
-    //         state->conn_params = CIP_CONN_PARAM;
-    //     }
-    // }
-
     state->connection_id = (uint32_t)rand() & (uint32_t)0xFFFFFFFF;
     state->sequence_id = (uint16_t)rand() & 0xFFFF;
 
@@ -551,14 +548,89 @@ int cip_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity,
 
 
 
+int cip_layer_accept_requests(void *context, plc_request_p *requests)
+{
+    int rc = PLCTAG_STATUS_OK;
+    struct cip_layer_state_s *state = (struct cip_layer_state_s *)context;
+
+    pdebug(DEBUG_INFO, "Starting.");
+
+    do {
+        if(state->request_in_flight) {
+            pdebug(DEBUG_INFO, "A request is already in flight!");
+            rc = PLCTAG_ERR_BUSY;
+            break;
+        }
+
+        /* is there anything to accept? */
+        if(!requests || !*requests) {
+            pdebug(DEBUG_INFO, "No requests in the passed list!");
+            /* TODO - should this be an error? */
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
+
+        /* take the first one off the list. */
+        state->request_in_flight = *requests;
+        *requests = state->request_in_flight->next;
+        state->request_in_flight->next = NULL;
+
+        pdebug(DEBUG_INFO, "Accepted one request.");
+
+        rc = PLCTAG_STATUS_OK;
+    } while(0);
+
+    pdebug(DEBUG_INFO, "Done.");
+
+    return rc;
+}
+
+
+int cip_layer_abort_request(void *context, plc_request_p request)
+{
+    int rc = PLCTAG_STATUS_OK;
+    struct cip_layer_state_s *state = (struct cip_layer_state_s *)context;
+
+    pdebug(DEBUG_INFO, "Starting.");
+
+    do {
+        if(!state->request_in_flight) {
+            pdebug(DEBUG_INFO, "No request is in flight!");
+            rc = PLCTAG_ERR_NOT_FOUND;
+            break;
+        }
+
+        /* is there anything to accept? */
+        if(!request) {
+            pdebug(DEBUG_INFO, "Null request passed!");
+            rc = PLCTAG_ERR_NULL_PTR;
+            break;
+        }
+
+        if(request == state->request_in_flight) {
+            pdebug(DEBUG_INFO, "Request found and removed from the internal list.");
+            state->request_in_flight = NULL;
+        } else {
+            pdebug(DEBUG_INFO, "Current request in flight does not match the passed request.");
+            rc = PLCTAG_ERR_NOT_FOUND;
+        }
+    } while(0);
+
+    pdebug(DEBUG_INFO, "Done.");
+
+    return rc;
+}
+
+
 /* called top down. */
 
-int cip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int cip_layer_build_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
     struct cip_layer_state_s *state = (struct cip_layer_state_s *)context;
     int offset = state->cip_header_start_offset;
-    int payload_size = *payload_end - *payload_start;
+    int payload_size_offset = 0;
+    int payload_size = 0;
 
     pdebug(DEBUG_INFO, "Building a request.");
 
@@ -593,13 +665,14 @@ int cip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity
         TRY_SET_U16_LE(buffer, buffer_capacity, offset, 2); /* two items. */
 
         /* first item, the connected address. */
-        TRY_SET_U16_LE(buffer, buffer_capacity, offset, CPF_CONNECTED_ADDRESS_ITEM); /* Null Address Item type */
+        TRY_SET_U16_LE(buffer, buffer_capacity, offset, CPF_CONNECTED_ADDRESS_ITEM); /* Address Item type */
         TRY_SET_U16_LE(buffer, buffer_capacity, offset, 4); /* address length = 4 bytes */
         TRY_SET_U32_LE(buffer, buffer_capacity, offset, state->plc_connection_id);
 
         /* second item, the data item and size */
-        TRY_SET_U16_LE(buffer, buffer_capacity, offset, CPF_CONNECTED_DATA_ITEM); /* Null Address Item type */
-        TRY_SET_U16_LE(buffer, buffer_capacity, offset, payload_size + 2); /* data length, note includes the sequence ID below! */
+        TRY_SET_U16_LE(buffer, buffer_capacity, offset, CPF_CONNECTED_DATA_ITEM); /* Data Item type */
+        payload_size_offset = offset;
+        TRY_SET_U16_LE(buffer, buffer_capacity, offset, 0); /* dummy value */
 
         /* this is not considered part of the header but part of the payload for size calculation... */
 
@@ -607,11 +680,27 @@ int cip_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity
         TRY_SET_U16_LE(buffer, buffer_capacity, offset, state->sequence_id++);
 
         /* check */
-        if(offset != *payload_start) {
-            pdebug(DEBUG_WARN, "Header ends at %d but payload starts at %d!", offset, *payload_start);
-            rc = PLCTAG_ERR_BAD_CONFIG;
-            break;
+        // if(offset != *payload_start) {
+        //     pdebug(DEBUG_WARN, "Header ends at %d but payload starts at %d!", offset, *payload_start);
+        //     rc = PLCTAG_ERR_BAD_CONFIG;
+        //     break;
+        // }
+
+        /* if there is no request in flight, then build whatever the layer above passed us. */
+        if(state->request_in_flight) {
+            pdebug(DEBUG_INFO, "Building request-in-flight payload.");
+
+            *payload_start = offset;
+
+            rc = state->request_in_flight->build_request(state->request_in_flight->context, buffer, *payload_end, payload_start, payload_end, 0);
+            if(rc != PLCTAG_STATUS_OK) {
+                pdebug(DEBUG_WARN, "Error %s while building payload for request in flight!", plc_tag_decode_error(rc));
+                break;
+            }
         }
+
+        payload_size = *payload_end - *payload_start;
+        TRY_SET_U16_LE(buffer, buffer_capacity, payload_size_offset, payload_size + 2); /* CIP payload size + 2 for the connection sequence ID */
 
         /* move the start backward to the start of this header. */
         *payload_start = state->cip_header_start_offset;
@@ -644,10 +733,9 @@ int cip_layer_process_response(void *context, uint8_t *buffer, int buffer_capaci
     int payload_size = *payload_end - *payload_start;
     int min_decode_size = (state->is_connected == true ? CPF_CONNECTED_HEADER_SIZE : CPF_UNCONNECTED_HEADER_SIZE);
 
-    pdebug(DEBUG_INFO, "Processing CIP response.");
+    (void)req_id;
 
-    /* there is only one CIP response in a packet. */
-    *req_id = 1;
+    pdebug(DEBUG_INFO, "Processing CIP response.");
 
     /* we at least have the header */
     do {
@@ -704,6 +792,17 @@ int cip_layer_process_response(void *context, uint8_t *buffer, int buffer_capaci
         } else {
             /* We do not process connected responses. */
             *payload_start = *payload_start + CPF_CONNECTED_HEADER_SIZE + 2;
+
+            if(state->request_in_flight) {
+                pdebug(DEBUG_INFO, "Processing response for request in flight.");
+
+                rc = state->request_in_flight->process_response(state->request_in_flight->context, buffer, *payload_end, payload_start, payload_end, 0);
+                if(rc != PLCTAG_STATUS_OK) {
+                    state->request_in_flight = NULL;
+                    pdebug(DEBUG_WARN, "Unable to process response for request in flight.  Got error %s!", plc_tag_decode_error(rc));
+                    break;
+                }
+            }
         }
 
         pdebug(DEBUG_INFO, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);

@@ -55,6 +55,8 @@ struct pccc_layer_state_s {
     /* session data */
     plc_p plc;
 
+    plc_request_p request_in_flight;
+
     int pccc_header_start_offset;
 };
 
@@ -63,7 +65,9 @@ static int pccc_layer_initialize(void *context);
 // static int pccc_layer_connect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 // static int pccc_layer_disconnect(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end);
 static int pccc_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
-static int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
+static int pccc_layer_accept_requests(void *context, plc_request_p *requests);
+static int pccc_layer_abort_request(void *context, plc_request_p request);
+static int pccc_layer_build_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int pccc_layer_process_response(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id);
 static int pccc_layer_destroy_layer(void *context);
 
@@ -94,7 +98,9 @@ int pccc_layer_setup(plc_p plc, int layer_index, attr attribs)
                        /*pccc_layer_connect*/ NULL,
                        /*pccc_layer_disconnect*/ NULL,
                        pccc_layer_reserve_space,
-                       pccc_layer_fix_up_request,
+                       pccc_layer_accept_requests,
+                       pccc_layer_abort_request,
+                       pccc_layer_build_request,
                        pccc_layer_process_response,
                        pccc_layer_destroy_layer);
     if(rc != PLCTAG_STATUS_OK) {
@@ -169,9 +175,84 @@ int pccc_layer_reserve_space(void *context, uint8_t *buffer, int buffer_capacity
 
 
 
+int pccc_layer_accept_requests(void *context, plc_request_p *requests)
+{
+    int rc = PLCTAG_STATUS_OK;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+
+    pdebug(DEBUG_INFO, "Starting.");
+
+    do {
+        if(state->request_in_flight) {
+            pdebug(DEBUG_INFO, "A request is already in flight!");
+            rc = PLCTAG_ERR_BUSY;
+            break;
+        }
+
+        /* is there anything to accept? */
+        if(!requests || !*requests) {
+            pdebug(DEBUG_INFO, "No requests in the passed list!");
+            /* TODO - should this be an error? */
+            rc = PLCTAG_STATUS_OK;
+            break;
+        }
+
+        /* take the first one off the list. */
+        state->request_in_flight = *requests;
+        *requests = state->request_in_flight->next;
+        state->request_in_flight->next = NULL;
+
+        pdebug(DEBUG_INFO, "Accepted one request.");
+
+        rc = PLCTAG_STATUS_OK;
+    } while(0);
+
+    pdebug(DEBUG_INFO, "Done.");
+
+    return rc;
+}
+
+
+int pccc_layer_abort_request(void *context, plc_request_p request)
+{
+    int rc = PLCTAG_STATUS_OK;
+    struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
+
+    pdebug(DEBUG_INFO, "Starting.");
+
+    do {
+        if(!state->request_in_flight) {
+            pdebug(DEBUG_INFO, "No request is in flight!");
+            rc = PLCTAG_ERR_NOT_FOUND;
+            break;
+        }
+
+        /* is there anything to accept? */
+        if(!request) {
+            pdebug(DEBUG_INFO, "Null request passed!");
+            rc = PLCTAG_ERR_NULL_PTR;
+            break;
+        }
+
+        if(request == state->request_in_flight) {
+            pdebug(DEBUG_INFO, "Request found and removed from the internal list.");
+            state->request_in_flight = NULL;
+        } else {
+            pdebug(DEBUG_INFO, "Current request in flight does not match the passed request.");
+            rc = PLCTAG_ERR_NOT_FOUND;
+        }
+    } while(0);
+
+    pdebug(DEBUG_INFO, "Done.");
+
+    return rc;
+}
+
+
+
 /* call top down. */
 
-int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
+int pccc_layer_build_request(void *context, uint8_t *buffer, int buffer_capacity, int *payload_start, int *payload_end, plc_request_id *req_id)
 {
     int rc = PLCTAG_STATUS_OK;
     struct pccc_layer_state_s *state = (struct pccc_layer_state_s *)context;
@@ -210,10 +291,22 @@ int pccc_layer_fix_up_request(void *context, uint8_t *buffer, int buffer_capacit
             break;
         }
 
+        if(state->request_in_flight) {
+            pdebug(DEBUG_INFO, "Building request-in-flight payload.");
+
+            *payload_start = offset;
+
+            rc = state->request_in_flight->build_request(state->request_in_flight->context, buffer, *payload_end, payload_start, payload_end, 0);
+            if(rc != PLCTAG_STATUS_OK) {
+                pdebug(DEBUG_WARN, "Error %s while building payload for request in flight!", plc_tag_decode_error(rc));
+                break;
+            }
+        }
+
         /* move the start backward for the next layer down. */
         *payload_start = state->pccc_header_start_offset;
 
-        pdebug(DEBUG_DETAIL, "Build PCCC packet:");
+        pdebug(DEBUG_DETAIL, "Built PCCC packet:");
         pdebug_dump_bytes(DEBUG_DETAIL, buffer + *payload_start, *payload_end - *payload_start);
 
         pdebug(DEBUG_INFO, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
@@ -270,6 +363,13 @@ int pccc_layer_process_response(void *context, uint8_t *buffer, int buffer_capac
         if(status == 0) {
             /* all good. */
             *payload_start += PCCC_RESP_HEADER_SIZE;
+
+            rc = state->request_in_flight->process_response(state->request_in_flight->context, buffer, *payload_end, payload_start, payload_end, 0);
+            if(rc != PLCTAG_STATUS_OK) {
+                state->request_in_flight = NULL;
+                pdebug(DEBUG_WARN, "Unable to process response for request in flight.  Got error %s!", plc_tag_decode_error(rc));
+                break;
+            }
 
             pdebug(DEBUG_INFO, "Set payload_start=%d and payload_end=%d.", *payload_start, *payload_end);
 
