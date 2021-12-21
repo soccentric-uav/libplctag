@@ -31,16 +31,15 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-
+#include "../lib/libplctag.h"
+#include "utils.h"
 #include <inttypes.h>
 #include <stdint.h>
-#include "../lib/libplctag.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "utils.h"
 
-#define REQUIRED_VERSION 2,1,0
+#define REQUIRED_VERSION 2, 1, 0
 
 #define TIMEOUT_MS (15000) /* a loooooong timeout */
 
@@ -48,13 +47,17 @@
 #define BARCODE_PROCESSED "protocol=ab_eip&gateway=10.206.1.40&path=1,4&cpu=lgx&elem_size=1&elem_count=1&name=barcode_processed"
 #define BARCODE "protocol=ab_eip&gateway=10.206.1.40&path=1,4&cpu=lgx&elem_size=88&elem_count=1&name=barcode"
 
-#define TRY(f) if((rc = (f)) != PLCTAG_STATUS_OK) { printf("ERROR: " #f " failed with error %s!\n", plc_tag_decode_error(rc)); break; }
+#define TRY(f)                                                                     \
+    if ((rc = (f)) != PLCTAG_STATUS_OK) {                                          \
+        printf("ERROR: " #f " failed with error %s!\n", plc_tag_decode_error(rc)); \
+        break;                                                                     \
+    }
 
 static int wait_for_new_barcode(void);
 static int read_barcode(void);
 static int mark_barcode_processed(void);
 
-int main(int argc, const char **argv)
+int main(int argc, const char** argv)
 {
     int rc = PLCTAG_STATUS_OK;
     int64_t last_read = util_time_ms();
@@ -64,13 +67,12 @@ int main(int argc, const char **argv)
     (void)argv;
 
     /* check the library version. */
-    if(plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
+    if (plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
         fprintf(stderr, "Required compatible library version %d.%d.%d not available!", REQUIRED_VERSION);
         exit(1);
     }
 
-
-    while(1) {
+    while (1) {
         int64_t new_time;
         int64_t diff_time;
         int64_t total_time;
@@ -94,16 +96,15 @@ int main(int argc, const char **argv)
     return rc;
 }
 
-
 int wait_for_new_barcode(void)
 {
     static int32_t new_barcode_tag = 0;
     int rc = PLCTAG_STATUS_PENDING;
 
-    if(new_barcode_tag <= 0) {
+    if (new_barcode_tag <= 0) {
         new_barcode_tag = plc_tag_create(NEW_BARCODE, TIMEOUT_MS);
 
-        if(new_barcode_tag < 0) {
+        if (new_barcode_tag < 0) {
             printf("ERROR: error creating tag for new_barcode!\n");
             return new_barcode_tag;
         }
@@ -117,31 +118,31 @@ int wait_for_new_barcode(void)
         TRY(plc_tag_read(new_barcode_tag, TIMEOUT_MS))
 
         /* get the flag value */
-        if((flag_val = plc_tag_get_uint8(new_barcode_tag, 0)) != UINT8_MAX) {
-            if(flag_val) {
+        if ((flag_val = plc_tag_get_uint8(new_barcode_tag, 0)) != UINT8_MAX) {
+            if (flag_val) {
                 rc = PLCTAG_STATUS_OK;
             } else {
                 rc = PLCTAG_STATUS_PENDING;
                 util_sleep_ms(4000);
             }
         }
-    } while(rc == PLCTAG_STATUS_PENDING);
+    } while (rc == PLCTAG_STATUS_PENDING);
 
     return rc;
 }
-
-
 
 int read_barcode(void)
 {
     static int32_t barcode_tag = 0;
     int rc = PLCTAG_STATUS_OK;
-    char barcode_buf[85] = {0,};
+    char barcode_buf[85] = {
+        0,
+    };
 
-    if(barcode_tag <= 0) {
+    if (barcode_tag <= 0) {
         barcode_tag = plc_tag_create(BARCODE, TIMEOUT_MS);
 
-        if(barcode_tag < 0) {
+        if (barcode_tag < 0) {
             printf("ERROR: error creating tag for barcode!\n");
             return barcode_tag;
         }
@@ -149,13 +150,13 @@ int read_barcode(void)
 
     /* read the tag. */
     rc = plc_tag_read(barcode_tag, TIMEOUT_MS);
-    if(rc != PLCTAG_STATUS_OK) {
+    if (rc != PLCTAG_STATUS_OK) {
         printf("ERROR: error reading barcode tag!\n");
         return rc;
     }
 
     rc = plc_tag_get_string(barcode_tag, 0, barcode_buf, (int)(unsigned int)sizeof(barcode_buf));
-    if(rc != PLCTAG_STATUS_OK) {
+    if (rc != PLCTAG_STATUS_OK) {
         printf("ERROR: error getting barcode string!\n");
         return rc;
     }
@@ -166,17 +167,15 @@ int read_barcode(void)
     return PLCTAG_STATUS_OK;
 }
 
-
-
 int mark_barcode_processed(void)
 {
     static int32_t barcode_processed_tag = 0;
     int rc = PLCTAG_STATUS_OK;
 
-    if(barcode_processed_tag <= 0) {
+    if (barcode_processed_tag <= 0) {
         barcode_processed_tag = plc_tag_create(BARCODE_PROCESSED, TIMEOUT_MS);
 
-        if(barcode_processed_tag < 0) {
+        if (barcode_processed_tag < 0) {
             printf("ERROR: error creating tag for barcode_processed!\n");
             return barcode_processed_tag;
         }
@@ -184,14 +183,14 @@ int mark_barcode_processed(void)
 
     /* set up the value */
     rc = plc_tag_set_uint8(barcode_processed_tag, 0, 0xFF);
-    if(rc != PLCTAG_STATUS_OK) {
+    if (rc != PLCTAG_STATUS_OK) {
         printf("ERROR: error setting processed flag value!\n");
         return rc;
     }
 
     /* write the tag. */
     rc = plc_tag_write(barcode_processed_tag, TIMEOUT_MS);
-    if(rc != PLCTAG_STATUS_OK) {
+    if (rc != PLCTAG_STATUS_OK) {
         printf("ERROR: error writing out barcode_processed tag!\n");
         return rc;
     }

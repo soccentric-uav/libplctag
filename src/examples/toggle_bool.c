@@ -31,13 +31,12 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-
-#include <stdio.h>
-#include <stdlib.h>
 #include "../lib/libplctag.h"
 #include "utils.h"
+#include <stdio.h>
+#include <stdlib.h>
 
-#define REQUIRED_VERSION 2,1,0
+#define REQUIRED_VERSION 2, 1, 0
 
 #define TAG_PATH "protocol=ab_eip&gateway=10.206.1.27&path=1,0&cpu=LGX&elem_size=1&elem_count=1&debug=1&name=pcomm_test_bool"
 #define DATA_TIMEOUT 5000
@@ -46,8 +45,6 @@
  * Read a boolean value and toggle it.
  */
 
-
-
 int main()
 {
     int32_t tag = 0;
@@ -55,7 +52,7 @@ int main()
     int b;
 
     /* check the library version. */
-    if(plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
+    if (plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
         fprintf(stderr, "Required compatible library version %d.%d.%d not available!", REQUIRED_VERSION);
         exit(1);
     }
@@ -64,60 +61,57 @@ int main()
     tag = plc_tag_create(TAG_PATH, DATA_TIMEOUT);
 
     /* everything OK? */
-    if(tag < 0) {
-        fprintf(stderr,"ERROR %s: Could not create tag!\n", plc_tag_decode_error(tag));
+    if (tag < 0) {
+        fprintf(stderr, "ERROR %s: Could not create tag!\n", plc_tag_decode_error(tag));
 
         return 0;
     }
 
     /* let the connect succeed we hope */
-    while(plc_tag_status(tag) == PLCTAG_STATUS_PENDING) {
+    while (plc_tag_status(tag) == PLCTAG_STATUS_PENDING) {
         util_sleep_ms(100);
     }
 
-    if(plc_tag_status(tag) != PLCTAG_STATUS_OK) {
-        fprintf(stderr,"Error setting up tag internal state. Error %s\n", plc_tag_decode_error(plc_tag_status(tag)));
+    if (plc_tag_status(tag) != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "Error setting up tag internal state. Error %s\n", plc_tag_decode_error(plc_tag_status(tag)));
         return 0;
     }
 
     /* get the data */
     rc = plc_tag_read(tag, DATA_TIMEOUT);
 
-    if(rc != PLCTAG_STATUS_OK) {
-        fprintf(stderr,"ERROR: Unable to read the data! Got error code %d: %s\n",rc, plc_tag_decode_error(rc));
+    if (rc != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "ERROR: Unable to read the data! Got error code %d: %s\n", rc, plc_tag_decode_error(rc));
         return 0;
     }
 
     /* print out the data */
-    b = plc_tag_get_uint8(tag,0);
-    fprintf(stderr,"bool = %d\n", b);
+    b = plc_tag_get_uint8(tag, 0);
+    fprintf(stderr, "bool = %d\n", b);
 
     plc_tag_set_uint8(tag, 0, (b ? 0 : 255));
 
     rc = plc_tag_write(tag, DATA_TIMEOUT);
 
-    if(rc != PLCTAG_STATUS_OK) {
-        fprintf(stderr,"ERROR: Unable to read the data! Got error code %d: %s\n",rc, plc_tag_decode_error(rc));
+    if (rc != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "ERROR: Unable to read the data! Got error code %d: %s\n", rc, plc_tag_decode_error(rc));
         return 0;
     }
-
 
     /* get the data again*/
     rc = plc_tag_read(tag, DATA_TIMEOUT);
 
-    if(rc != PLCTAG_STATUS_OK) {
-        fprintf(stderr,"ERROR: Unable to read the data! Got error code %d: %s\n",rc, plc_tag_decode_error(rc));
+    if (rc != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "ERROR: Unable to read the data! Got error code %d: %s\n", rc, plc_tag_decode_error(rc));
         return 0;
     }
 
     /* print out the data */
-    b = plc_tag_get_uint8(tag,0);
-    fprintf(stderr,"bool = %d\n", b);
+    b = plc_tag_get_uint8(tag, 0);
+    fprintf(stderr, "bool = %d\n", b);
 
     /* we are done */
     plc_tag_destroy(tag);
 
     return 0;
 }
-
-

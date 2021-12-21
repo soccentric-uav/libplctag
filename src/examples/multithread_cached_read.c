@@ -31,18 +31,17 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <pthread.h>
-#include <stdint.h>
-#include <inttypes.h>
-#include <sys/time.h>
 #include "../lib/libplctag.h"
 #include "utils.h"
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <unistd.h>
 
-#define REQUIRED_VERSION 2,1,0
+#define REQUIRED_VERSION 2, 1, 0
 
 #define TAG_PATH "protocol=ab_eip&gateway=10.17.45.37&path=1,0&cpu=LGX&elem_size=4&elem_count=1&name=DataIn_Frm_Sched[1]&read_cache_ms=100"
 #define ELEM_COUNT 1
@@ -58,24 +57,21 @@
  * access.
  */
 
-
 /* global to cheat on passing it to threads. */
 volatile int32_t tag;
 volatile int done = 0;
-
-
 
 /*
  * Thread function.  Just read until killed.
  */
 
-void *thread_func(void *data)
+void* thread_func(void* data)
 {
     int tid = (int)(intptr_t)data;
     int rc;
     int value;
 
-    while(!done) {
+    while (!done) {
         int64_t start;
         int64_t end;
 
@@ -86,26 +82,26 @@ void *thread_func(void *data)
         do {
             rc = plc_tag_lock(tag);
 
-            if(rc != PLCTAG_STATUS_OK) {
+            if (rc != PLCTAG_STATUS_OK) {
                 value = 1000;
                 break; /* punt, no lock */
             }
 
             rc = plc_tag_read(tag, DATA_TIMEOUT);
 
-            if(rc != PLCTAG_STATUS_OK) {
+            if (rc != PLCTAG_STATUS_OK) {
                 value = 1001;
             } else {
-                value = (int)plc_tag_get_int32(tag,0);
+                value = (int)plc_tag_get_int32(tag, 0);
             }
 
             /* yes, we should look at the return value */
             plc_tag_unlock(tag);
-        } while(0);
+        } while (0);
 
         end = util_time_ms();
 
-        fprintf(stderr,"%" PRId64 " Thread %d got result %d with return code %s in %dms\n",util_time_ms(),tid,value,plc_tag_decode_error(rc),(int)(end-start));
+        fprintf(stderr, "%" PRId64 " Thread %d got result %d with return code %s in %dms\n", util_time_ms(), tid, value, plc_tag_decode_error(rc), (int)(end - start));
 
         util_sleep_ms(1);
     }
@@ -113,8 +109,7 @@ void *thread_func(void *data)
     return NULL;
 }
 
-
-int main(int argc, char **argv)
+int main(int argc, char** argv)
 {
     int rc = PLCTAG_STATUS_OK;
     pthread_t thread[MAX_THREADS];
@@ -122,20 +117,20 @@ int main(int argc, char **argv)
     int thread_id = 0;
 
     /* check the library version. */
-    if(plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
+    if (plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
         fprintf(stderr, "Required compatible library version %d.%d.%d not available!", REQUIRED_VERSION);
         exit(1);
     }
 
-    if(argc != 2) {
-        fprintf(stderr,"ERROR: Must provide number of threads to run (between 1 and 300) argc=%d!\n",argc);
+    if (argc != 2) {
+        fprintf(stderr, "ERROR: Must provide number of threads to run (between 1 and 300) argc=%d!\n", argc);
         return 0;
     }
 
-    num_threads = (int)strtol(argv[1],NULL, 10);
+    num_threads = (int)strtol(argv[1], NULL, 10);
 
-    if(num_threads < 1 || num_threads > MAX_THREADS) {
-        fprintf(stderr,"ERROR: %d (%s) is not a valid number. Must provide number of threads to run (between 1 and 300)!\n",num_threads, argv[1]);
+    if (num_threads < 1 || num_threads > MAX_THREADS) {
+        fprintf(stderr, "ERROR: %d (%s) is not a valid number. Must provide number of threads to run (between 1 and 300)!\n", num_threads, argv[1]);
         return 0;
     }
 
@@ -143,32 +138,32 @@ int main(int argc, char **argv)
     tag = plc_tag_create(TAG_PATH, DATA_TIMEOUT);
 
     /* everything OK? */
-    if(tag < 0) {
-        fprintf(stderr,"ERROR %s: Could not create tag!\n", plc_tag_decode_error(tag));
+    if (tag < 0) {
+        fprintf(stderr, "ERROR %s: Could not create tag!\n", plc_tag_decode_error(tag));
         return 0;
     }
 
-    if((rc = plc_tag_status(tag)) != PLCTAG_STATUS_OK) {
-        fprintf(stderr,"Error setting up tag internal state. %s\n", plc_tag_decode_error(rc));
+    if ((rc = plc_tag_status(tag)) != PLCTAG_STATUS_OK) {
+        fprintf(stderr, "Error setting up tag internal state. %s\n", plc_tag_decode_error(rc));
         plc_tag_destroy(tag);
         return 0;
     }
 
     /* create the read threads */
-    fprintf(stderr,"Creating %d threads.\n",num_threads);
+    fprintf(stderr, "Creating %d threads.\n", num_threads);
 
-    for(thread_id=0; thread_id < num_threads; thread_id++) {
-        pthread_create(&thread[thread_id], NULL, thread_func, (void *)(intptr_t)thread_id);
+    for (thread_id = 0; thread_id < num_threads; thread_id++) {
+        pthread_create(&thread[thread_id], NULL, thread_func, (void*)(intptr_t)thread_id);
     }
 
     /* wait until ^C */
-    while(1) {
+    while (1) {
         util_sleep_ms(100);
     }
 
     done = 1;
 
-    for(thread_id = 0; thread_id < num_threads; thread_id++) {
+    for (thread_id = 0; thread_id < num_threads; thread_id++) {
         pthread_join(thread[thread_id], NULL);
     }
 

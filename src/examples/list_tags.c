@@ -31,16 +31,14 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 
-
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
 #include "../lib/libplctag.h"
 #include "utils.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#define REQUIRED_VERSION 2,2,0
+#define REQUIRED_VERSION 2, 2, 0
 
 #define TAG_STRING_SIZE (200)
 #define TIMEOUT_MS (5000)
@@ -49,13 +47,13 @@
 #define TAG_DIM_MASK ((uint16_t)0x6000)
 
 struct program_entry_s {
-    struct program_entry_s *next;
-    char *program_name;
+    struct program_entry_s* next;
+    char* program_name;
 };
 
 struct tag_entry_s {
-    struct tag_entry_s *next;
-    char *name;
+    struct tag_entry_s* next;
+    char* name;
     uint16_t type;
     uint16_t elem_size;
     uint16_t elem_count;
@@ -69,21 +67,23 @@ void usage()
     exit(1);
 }
 
-int32_t setup_tag(char *plc_ip, char *path, char *program)
+int32_t setup_tag(char* plc_ip, char* path, char* program)
 {
     int32_t tag = PLCTAG_ERR_CREATE;
-    char tag_string[TAG_STRING_SIZE] = {0,};
+    char tag_string[TAG_STRING_SIZE] = {
+        0,
+    };
 
-    if(!program || strlen(program) == 0) {
-        snprintf(tag_string, TAG_STRING_SIZE-1,"protocol=ab-eip&gateway=%s&path=%s&cpu=lgx&name=@tags", plc_ip, path);
+    if (!program || strlen(program) == 0) {
+        snprintf(tag_string, TAG_STRING_SIZE - 1, "protocol=ab-eip&gateway=%s&path=%s&cpu=lgx&name=@tags", plc_ip, path);
     } else {
-        snprintf(tag_string, TAG_STRING_SIZE-1,"protocol=ab-eip&gateway=%s&path=%s&cpu=lgx&name=%s.@tags", plc_ip, path, program);
+        snprintf(tag_string, TAG_STRING_SIZE - 1, "protocol=ab-eip&gateway=%s&path=%s&cpu=lgx&name=%s.@tags", plc_ip, path, program);
     }
 
     //printf("Using tag string: %s\n", tag_string);
 
     tag = plc_tag_create(tag_string, TIMEOUT_MS);
-    if(tag < 0) {
+    if (tag < 0) {
         printf("Unable to open tag!  Return code %s\n", plc_tag_decode_error(tag));
         usage();
     }
@@ -91,21 +91,20 @@ int32_t setup_tag(char *plc_ip, char *path, char *program)
     return tag;
 }
 
-
-void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct program_entry_s **prog_list)
+void get_list(int32_t tag, char* prefix, struct tag_entry_s** tag_list, struct program_entry_s** prog_list)
 {
     int rc = PLCTAG_STATUS_OK;
     int offset = 0;
     int prefix_size = 0;
 
     rc = plc_tag_read(tag, TIMEOUT_MS);
-    if(rc != PLCTAG_STATUS_OK) {
-        printf("Unable to read tag!  Return code %s\n",plc_tag_decode_error(tag));
+    if (rc != PLCTAG_STATUS_OK) {
+        printf("Unable to read tag!  Return code %s\n", plc_tag_decode_error(tag));
         usage();
     }
 
     /* get the prefix length */
-    if(prefix && strlen(prefix) > 0) {
+    if (prefix && strlen(prefix) > 0) {
         prefix_size = (int)(unsigned int)strlen(prefix) + 1; /* +1 for the dot */
     } else {
         prefix_size = 0;
@@ -116,9 +115,11 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
         /* uint32_t tag_instance_id = 0; */
         uint16_t tag_type = 0;
         uint16_t element_length = 0;
-        uint16_t array_dims[3] = {0,};
+        uint16_t array_dims[3] = {
+            0,
+        };
         int tag_name_len = 0;
-        char *tag_name = NULL;
+        char* tag_name = NULL;
 
         /* each entry looks like this:
             uint32_t instance_id    monotonically increasing but not contiguous
@@ -152,18 +153,18 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
 
         /* allocate space for the prefix plus the tag name. */
         tag_name = malloc((size_t)(unsigned int)(tag_name_len + prefix_size));
-        if(!tag_name) {
+        if (!tag_name) {
             fprintf(stderr, "Unable to allocate memory for the tag name!\n");
             usage();
         }
 
         /* copy the prefix string. */
-        if(prefix_size > 0) {
+        if (prefix_size > 0) {
             snprintf(tag_name, (size_t)(unsigned int)(tag_name_len + prefix_size), "%s.", prefix);
         }
 
         rc = plc_tag_get_string(tag, offset, tag_name + prefix_size, tag_name_len);
-        if(rc != PLCTAG_STATUS_OK) {
+        if (rc != PLCTAG_STATUS_OK) {
             fprintf(stderr, "Unable to get the tag name string, got error %s!\n", plc_tag_decode_error(rc));
             usage();
         }
@@ -174,11 +175,11 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
         offset += plc_tag_get_string_total_length(tag, offset);
 
         /* if the tag is actually a program, put it on the program list for later. */
-        if(prog_list && strncmp(tag_name, "Program:", strlen("Program:")) == 0) {
-            struct program_entry_s *entry = malloc(sizeof(*entry));
+        if (prog_list && strncmp(tag_name, "Program:", strlen("Program:")) == 0) {
+            struct program_entry_s* entry = malloc(sizeof(*entry));
 
-            if(!entry) {
-                fprintf(stderr,"Unable to allocate memory for program entry!\n");
+            if (!entry) {
+                fprintf(stderr, "Unable to allocate memory for program entry!\n");
                 usage();
             }
 
@@ -188,10 +189,10 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
             entry->program_name = tag_name;
 
             *prog_list = entry;
-        } else if(!(tag_type & TAG_IS_SYSTEM)) {
-            struct tag_entry_s *tag_entry = calloc(1, sizeof(*tag_entry));
+        } else if (!(tag_type & TAG_IS_SYSTEM)) {
+            struct tag_entry_s* tag_entry = calloc(1, sizeof(*tag_entry));
 
-            if(!tag_entry) {
+            if (!tag_entry) {
                 fprintf(stderr, "Unable to allocate memory for tag entry!\n");
                 usage();
             }
@@ -209,7 +210,7 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
             tag_entry->dimensions[1] = array_dims[1];
             tag_entry->dimensions[2] = array_dims[2];
 
-            for(uint16_t i=0; i < tag_entry->num_dimensions; i++) {
+            for (uint16_t i = 0; i < tag_entry->num_dimensions; i++) {
                 tag_entry->elem_count = (uint16_t)((uint16_t)tag_entry->elem_count * (uint16_t)(tag_entry->dimensions[i]));
             }
 
@@ -220,40 +221,37 @@ void get_list(int32_t tag, char *prefix, struct tag_entry_s **tag_list, struct p
             //printf("index %d: Found system tag name=%s, tag instance ID=%x, tag type=%x, element length (in bytes) = %d, array dimensions = (%d, %d, %d)\n", index, tag_name, tag_instance_id, tag_type, (int)element_length, (int)array_dims[0], (int)array_dims[1], (int)array_dims[2]);
             free(tag_name);
         }
-    } while(rc == PLCTAG_STATUS_OK && offset < plc_tag_get_size(tag));
+    } while (rc == PLCTAG_STATUS_OK && offset < plc_tag_get_size(tag));
 
     plc_tag_destroy(tag);
 }
 
-
-
-
-int main(int argc, char **argv)
+int main(int argc, char** argv)
 {
-    char *host = NULL;
-    char *path = NULL;
+    char* host = NULL;
+    char* path = NULL;
     int32_t tag;
-    struct program_entry_s *programs = NULL;
-    struct tag_entry_s *tags = NULL;
+    struct program_entry_s* programs = NULL;
+    struct tag_entry_s* tags = NULL;
 
     /* check the library version. */
-    if(plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
+    if (plc_tag_check_lib_version(REQUIRED_VERSION) != PLCTAG_STATUS_OK) {
         fprintf(stderr, "Required compatible library version %d.%d.%d not available!", REQUIRED_VERSION);
         exit(1);
     }
 
-    if(argc < 3) {
+    if (argc < 3) {
         usage();
     }
 
-    if(!argv[1] || strlen(argv[1]) == 0) {
+    if (!argv[1] || strlen(argv[1]) == 0) {
         printf("Hostname or IP address must not be zero length!\n");
         usage();
     }
 
     host = argv[1];
 
-    if(!argv[2] || strlen(argv[2]) == 0) {
+    if (!argv[2] || strlen(argv[2]) == 0) {
         printf("PLC path must not be zero length!\n");
         usage();
     }
@@ -268,8 +266,8 @@ int main(int argc, char **argv)
 
     get_list(tag, NULL, &tags, &programs);
 
-    while(programs) {
-        struct program_entry_s *program = programs;
+    while (programs) {
+        struct program_entry_s* program = programs;
 
         fprintf(stderr, "Getting tags for program: %s.\n", program->program_name);
         tag = setup_tag(argv[1], argv[2], program->program_name);
@@ -284,25 +282,25 @@ int main(int argc, char **argv)
     }
 
     /* loop over the tags and output their connection strings. */
-    while(tags) {
-        struct tag_entry_s *tag = tags;
+    while (tags) {
+        struct tag_entry_s* tag = tags;
 
         printf("Tag \"%s", tag->name);
-        switch(tag->num_dimensions) {
-            case 1:
-                printf("[%d]", tag->dimensions[0]);
-                break;
+        switch (tag->num_dimensions) {
+        case 1:
+            printf("[%d]", tag->dimensions[0]);
+            break;
 
-            case 2:
-                printf("[%d,%d]", tag->dimensions[0], tag->dimensions[1]);
-                break;
+        case 2:
+            printf("[%d,%d]", tag->dimensions[0], tag->dimensions[1]);
+            break;
 
-            case 3:
-                printf("[%d,%d,%d]", tag->dimensions[0], tag->dimensions[1], tag->dimensions[2]);
-                break;
+        case 3:
+            printf("[%d,%d,%d]", tag->dimensions[0], tag->dimensions[1], tag->dimensions[2]);
+            break;
 
-            default:
-                break;
+        default:
+            break;
         }
 
         printf("\" (%04x): protocol=ab-eip&gateway=%s&path=%s&plc=ControlLogix&elem_size=%u&elem_count=%u&name=%s\n", tag->type, host, path, tag->elem_size, tag->elem_count, tag->name);

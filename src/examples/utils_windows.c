@@ -33,16 +33,14 @@
 
 #include "utils.h"
 
-#include <string.h>
-#include <stdlib.h>
-#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 /*
  * This file contains useful utilities for the sample programs.
  */
-
 
 /*
  * sleep_ms
@@ -55,8 +53,6 @@ int util_sleep_ms(int ms)
     Sleep(ms);
     return 1;
 }
-
-
 
 /*
  * time_ms
@@ -78,6 +74,5 @@ int64_t util_time_ms(void)
     /* get time in ms */
     res = res / 10000;
 
-    return  res;
+    return res;
 }
-
